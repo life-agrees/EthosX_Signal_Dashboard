@@ -1,0 +1,318 @@
+# data_fetch_bybit.py
+
+import os
+import requests
+import pandas as pd
+import socket
+from datetime import datetime, timedelta
+import ta
+import time
+
+from config import (
+    SUPPORTED_TOKENS,
+    PERP_SYMBOLS,
+    LOOKBACK_PERIOD,
+    LABEL_HORIZON,
+    DATA_DIR,
+)
+from sentiment import get_token_sentiment
+
+# Bybit API configuration
+BYBIT_BASE_URL = "https://api.bybit.com"
+
+def fetch_funding_rate(symbol: str) -> float:
+    """
+    Fetch the most recent funding rate for a USDT perpetual on Bybit.
+    """
+    url = f"{BYBIT_BASE_URL}/v5/market/funding/history"
+    params = {
+        "category": "linear",
+        "symbol": symbol,
+        "limit": 1
+    }
+    
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        if data.get("retCode") == 0 and data.get("result", {}).get("list"):
+            return float(data["result"]["list"][0]["fundingRate"])
+        return 0.0
+    except Exception as e:
+        print(f"[WARN] Failed to fetch funding rate for {symbol}: {e}")
+        return 0.0
+
+
+def fetch_open_interest(symbol: str) -> float:
+    """
+    Fetch the current open interest for a USDT perpetual on Bybit.
+    """
+    url = f"{BYBIT_BASE_URL}/v5/market/open-interest"
+    params = {
+        "category": "linear",
+        "symbol": symbol
+    }
+    
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        if data.get("retCode") == 0 and data.get("result", {}).get("list"):
+            return float(data["result"]["list"][0]["openInterest"])
+        return 0.0
+    except Exception as e:
+        print(f"[WARN] Failed to fetch open interest for {symbol}: {e}")
+        return 0.0
+
+
+def get_bybit_klines(symbol: str, interval="1", limit=None) -> pd.DataFrame:
+    """
+    Fetch 1-minute klines from Bybit.
+    Returns a DataFrame with columns: 'open', 'high', 'low', 'close', 'volume'.
+    
+    Args:
+        symbol: Trading pair symbol (e.g., 'BTCUSDT')
+        interval: Kline interval ('1' for 1 minute)
+        limit: Number of klines to fetch (max 1000 for Bybit)
+    """
+    if limit is None:
+        limit = LOOKBACK_PERIOD + LABEL_HORIZON
+    
+    # Handle string limit parameter (from your original code)
+    if isinstance(limit, str):
+        try:
+            limit = int(limit)
+        except ValueError:
+            limit = 100  # Default fallback
+    
+    # Bybit has a max limit of 1000 klines per request
+    limit = min(limit, 1000)
+    
+    url = f"{BYBIT_BASE_URL}/v5/market/kline"
+    params = {
+        "category": "linear",
+        "symbol": symbol.upper(),
+        "interval": interval,
+        "limit": str(limit)  # Ensure limit is passed as string to API
+    }
+    
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        if data.get("retCode") != 0:
+            print(f"[ERROR] Bybit API error for {symbol}: {data.get('retMsg', 'Unknown error')}")
+            return pd.DataFrame()
+        
+        klines = data.get("result", {}).get("list", [])
+        if not klines:
+            print(f"[WARN] No kline data available for {symbol}")
+            return pd.DataFrame()
+        
+        # Bybit returns data in reverse chronological order, so we need to reverse it
+        klines.reverse()
+        
+        # Bybit kline format: [startTime, openPrice, highPrice, lowPrice, closePrice, volume, turnover]
+        df = pd.DataFrame(klines, columns=[
+            "timestamp", "open", "high", "low", "close", "volume", "turnover"
+        ])
+        
+        # FIX 1: Ensure all data is properly typed before any operations
+        # Convert timestamp from string milliseconds to proper datetime
+        df["timestamp"] = pd.to_numeric(df["timestamp"], errors='coerce')
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", errors='coerce')
+        
+        # FIX 2: Convert all OHLCV data to numeric, handling any string values
+        numeric_columns = ["open", "high", "low", "close", "volume", "turnover"]
+        for col in numeric_columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        # FIX 3: Remove any rows with invalid data (NaN timestamps or prices)
+        df = df.dropna(subset=["timestamp", "close"])
+        
+        # FIX 4: Sort by timestamp to ensure proper chronological order
+        df = df.sort_values("timestamp").reset_index(drop=True)
+        
+        # FIX 5: Return ALL OHLCV columns, not just close and volume
+        # This matches what your API server expects
+        df = df[["timestamp", "open", "high", "low", "close", "volume"]].copy()
+        
+        # Set timestamp as index AFTER all cleaning is done
+        df.set_index("timestamp", inplace=True)
+        
+        return df
+        
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, socket.gaierror) as e:
+        print(f"[ERROR] Network error fetching data for {symbol}: {e}")
+        return pd.DataFrame()
+    except requests.exceptions.HTTPError as e:
+        print(f"[ERROR] HTTP error for {symbol}: {e}")
+        return pd.DataFrame()
+    except ValueError as e:
+        print(f"[ERROR] Data parsing error for {symbol}: {e}")
+        return pd.DataFrame()
+    except Exception as e:
+        print(f"[ERROR] Unexpected error for {symbol}: {e}")
+        return pd.DataFrame()
+
+
+def build_token_features(token: str) -> pd.DataFrame:
+    """
+    Build features for a single token:
+      - price_return (pct change of close),
+      - volume_change (pct change of volume),
+      - sentiment (Twitter),
+      - target (future 5-min return),
+      - label (1/0/-1).
+    Returns a DataFrame with these columns.
+    """
+    symbol = PERP_SYMBOLS[token].upper()
+    df = get_bybit_klines(symbol)
+    
+    if df.empty:
+        print(f"[WARN] No data available for {token}. Skipping feature build.")
+        return df
+
+    try:
+        # FIX 6: Ensure we have enough data before calculating indicators
+        if len(df) < 30:  # Need at least 30 points for reliable indicators
+            print(f"[WARN] Insufficient data for {token} ({len(df)} points). Skipping.")
+            return pd.DataFrame()
+
+        # Basic price and volume features with error handling
+        df["close_return"] = df["close"].pct_change(periods=min(15, len(df)-1))
+        df["volume_change"] = df["volume"].pct_change()
+        df["return_15m"] = df["close"].pct_change(periods=min(15, len(df)-1))
+        df["volume_15m"] = df["volume"].rolling(window=min(15, len(df)), min_periods=1).sum()
+        
+        # Fetch funding rate and open interest (these return floats)
+        funding_rate_val = fetch_funding_rate(symbol)
+        open_interest_val = fetch_open_interest(symbol)
+        
+        df["funding_rate"] = float(funding_rate_val)
+        df["open_interest"] = float(open_interest_val)
+
+        # Fetch sentiment (cached internally)
+        sentiment_score = get_token_sentiment(token)
+        df["sentiment"] = float(sentiment_score)
+
+        # FIX 7: Technical indicators with proper error handling
+        try:
+            # 14-period RSI (need at least 14 points)
+            if len(df) >= 14:
+                rsi_indicator = ta.momentum.RSIIndicator(df["close"], window=14)
+                df["rsi_14"] = rsi_indicator.rsi()
+            else:
+                df["rsi_14"] = 50.0  # Neutral RSI
+        except Exception as e:
+            print(f"[WARN] RSI calculation failed for {token}: {e}")
+            df["rsi_14"] = 50.0
+
+        try:
+            # MACD difference (need at least 26 points)
+            if len(df) >= 26:
+                macd = ta.trend.MACD(df["close"], window_slow=26, window_fast=12, window_sign=9)
+                df["macd_diff"] = macd.macd_diff()
+            else:
+                df["macd_diff"] = 0.0
+        except Exception as e:
+            print(f"[WARN] MACD calculation failed for {token}: {e}")
+            df["macd_diff"] = 0.0
+
+        # FIX 8: Safe target and label calculation
+        try:
+            # Create target: future return over LABEL_HORIZON minutes
+            if len(df) > LABEL_HORIZON:
+                df["target"] = df["close"].shift(-LABEL_HORIZON) / df["close"] - 1
+                
+                # Discrete label: 1 (up), -1 (down), 0 (hold)
+                def safe_label(x):
+                    if pd.isna(x):
+                        return 0
+                    return 1 if x > 0.001 else -1 if x < -0.001 else 0
+                
+                df["label"] = df["target"].apply(safe_label)
+            else:
+                df["target"] = 0.0
+                df["label"] = 0
+        except Exception as e:
+            print(f"[WARN] Target/label calculation failed for {token}: {e}")
+            df["target"] = 0.0
+            df["label"] = 0
+
+        # FIX 9: Final cleanup - remove NaN values safely
+        df = df.replace([float('inf'), float('-inf')], 0.0)  # Replace infinity values
+        df = df.fillna(0.0)  # Fill remaining NaN with neutral values
+        
+        return df
+
+    except Exception as e:
+        print(f"[ERROR] Feature building failed for {token}: {e}")
+        return pd.DataFrame()
+
+
+def save_token_data(token: str):
+    """
+    Build features for a token and save to CSV.
+    """
+    df = build_token_features(token)
+    if df.empty:
+        return
+    
+    os.makedirs(DATA_DIR, exist_ok=True)
+    file_path = f"{DATA_DIR}/{token}_features.csv"
+    df.to_csv(file_path)
+    print(f"Saved feature data for {token} to {file_path}")
+
+
+def save_all():
+    """
+    Iterate through all supported tokens and save their feature CSVs.
+    """
+    for token in SUPPORTED_TOKENS:
+        try:
+            save_token_data(token)
+            # Add a small delay to avoid hitting rate limits
+            time.sleep(0.1)
+        except Exception as e:
+            print(f"[ERROR] Failed for {token}: {e}")
+
+
+def test_bybit_connection():
+    """
+    Test connection to Bybit API and display available symbols.
+    """
+    url = f"{BYBIT_BASE_URL}/v5/market/instruments-info"
+    params = {"category": "linear", "limit": 10}
+    
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        if data.get("retCode") == 0:
+            print("[INFO] Successfully connected to Bybit API")
+            symbols = [item["symbol"] for item in data.get("result", {}).get("list", [])]
+            print(f"[INFO] Sample available symbols: {symbols[:5]}")
+            return True
+        else:
+            print(f"[ERROR] Bybit API error: {data.get('retMsg', 'Unknown error')}")
+            return False
+    except Exception as e:
+        print(f"[ERROR] Failed to connect to Bybit API: {e}")
+        return False
+
+
+if __name__ == "__main__":
+    print("Testing Bybit API connection...")
+    if test_bybit_connection():
+        print("Starting data collection...")
+        save_all()
+    else:
+        print("Failed to connect to Bybit API. Please check your internet connection.")
+
+# This script fetches and processes trading data from Bybit API for supported tokens,
+# building features like price returns, volume changes, and sentiment scores.
