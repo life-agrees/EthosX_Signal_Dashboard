@@ -2,11 +2,16 @@
 
 import os
 import requests
+from dotenv import load_dotenv
 import pandas as pd
 import socket
 from datetime import datetime, timedelta
 import ta
 import time
+import hashlib, hmac, time
+import warnings
+warnings.filterwarnings("ignore")
+
 
 from config import (
     SUPPORTED_TOKENS,
@@ -17,19 +22,32 @@ from config import (
 )
 from sentiment import get_token_sentiment
 
+load_dotenv()   # ← this reads your .env into os.environ
+print("KEY:", os.getenv("BYBIT_API_KEY"))
+print("SECRET:", os.getenv("BYBIT_API_SECRET"))
+
+
 # Set up request headers for Bybit API calls
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Content-Type': 'application/json',
     'Accept': 'application/json',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Connection': 'keep-alive',
-    'Upgrade-Insecure-Requests': '1',
-    'Sec-Fetch-Dest': 'document',
-    'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'none',
-    'Cache-Control': 'max-age=0'
 }
+
+API_KEY    = os.getenv("BYBIT_API_KEY")
+API_SECRET = os.getenv("BYBIT_API_SECRET")
+
+def sign(params: dict) -> str:
+    to_sign = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+    return hmac.new(API_SECRET.encode(), to_sign.encode(), hashlib.sha256).hexdigest()
+
+def public_get(path: str, params: dict) -> requests.Response:
+    params.update({
+        "apiKey":    API_KEY,
+        "timestamp": int(time.time() * 1000),
+    })
+    params["sign"] = sign(params)
+    return requests.get(BYBIT_BASE_URL + path, params=params, timeout=10)
 
 # Bybit API configuration
 BYBIT_BASE_URL = "https://api.bybit.com"
@@ -46,7 +64,7 @@ def fetch_funding_rate(symbol: str) -> float:
     }
     
     try:
-        resp = requests.get(url, params=params, headers=HEADERS, timeout=10)
+        resp = public_get("/v5/market/funding/history", params)
         resp.raise_for_status()
         data = resp.json()
         
@@ -69,7 +87,7 @@ def fetch_open_interest(symbol: str) -> float:
     }
     
     try:
-        resp = requests.get(url, params=params, headers=HEADERS, timeout=10)
+        resp = public_get("/v5/market/open-interest", params)
         resp.raise_for_status()
         data = resp.json()
         
@@ -116,7 +134,7 @@ def get_bybit_klines(symbol: str, interval="1", limit=None, max_retries=3) -> pd
         # Add retry logic for 403 errors
         for attempt in range(max_retries):
             try:
-                response = requests.get(url, params=params, headers=HEADERS, timeout=10)
+                response = public_get("/v5/market/kline", params)
                 
                 # Handle 403 specifically
                 if response.status_code == 403:
@@ -470,7 +488,7 @@ def test_bybit_connection():
     params = {"category": "linear", "limit": 10}
     
     try:
-        resp = requests.get(url, params=params, headers=HEADERS, timeout=10)
+        resp = public_get("/v5/market/instruments-info", params)
         resp.raise_for_status()
         data = resp.json()
         
