@@ -3,12 +3,11 @@
 // For local development, use localhost:8000
 // For production on Render, use your backend service URL
 const API_BASE_URL = process.env.NODE_ENV === 'production' 
-  ? process.env.EthosX_APP_API_URL || 'https://your-backend.onrender.com'
+  ? 'https://ethosx-signal-dashboard.onrender.com'  // ← Your actual backend URL
   : 'http://localhost:8000';
 
-// WebSocket URL
 const WS_BASE_URL = process.env.NODE_ENV === 'production'
-  ? process.env.EthosX_APP_API_URL || 'https://your-backend.onrender.com'
+  ? 'wss://ethosx-signal-dashboard.onrender.com'   // ← Your actual backend URL (WebSocket)
   : 'ws://localhost:8000';
 
 // Use these in your API calls
