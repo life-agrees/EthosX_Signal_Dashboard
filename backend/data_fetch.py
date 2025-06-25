@@ -33,10 +33,9 @@ print("SECRET:", os.getenv("BYBIT_API_SECRET"))
 
 # Set up request headers for Bybit API calls
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Content-Type': 'application/json',
-    'Accept': 'application/json',
+    'User-Agent': 'ethosx-fetcher'
 }
+
 
 API_KEY    = os.getenv("BYBIT_API_KEY")
 API_SECRET = os.getenv("BYBIT_API_SECRET")
@@ -133,6 +132,8 @@ def get_bybit_klines(symbol: str, interval="1", limit=None, max_retries=3) -> pd
         for attempt in range(max_retries):
             try:
                 response = public_get("/v5/market/kline", params)
+                print(f"[DEBUG] Raw Bybit response for {symbol}:", response.text)
+
                 
                 # Handle 403 specifically
                 if response.status_code == 403:
