@@ -219,7 +219,8 @@ async def update_market_data():
                     symbol = PERP_SYMBOLS[token].upper()
                     
                     # CHANGED: Use Bybit function instead of Binance
-                    df = get_bybit_klines(symbol, limit="100")
+                    df = get_bybit_klines(symbol, limit=100)
+                    print(f"Fetched data for {token}: {len(df)} rows")
                     if df.empty:
                         print(f"[WARN] No data available for {token} from Bybit")
                         continue

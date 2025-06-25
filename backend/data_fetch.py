@@ -26,7 +26,7 @@ from sentiment import get_token_sentiment
 BYBIT_BASE_URL = "https://api.bybit.com"
 
 
-load_dotenv()   # ← this reads your .env into os.environ
+#load_dotenv()   # ← this reads your .env into os.environ
 print("KEY:", os.getenv("BYBIT_API_KEY"))
 print("SECRET:", os.getenv("BYBIT_API_SECRET"))
 
