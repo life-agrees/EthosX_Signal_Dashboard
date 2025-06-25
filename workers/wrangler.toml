@@ -1,0 +1,5 @@
+name = "ethosx-bybit-proxy"
+main = "src/index.js"
+compatibility_date = "2025-06-25"
+route = ""          # leave blank for a workers.dev subdomain
+zone_id = ""        # leave blank for workers.dev subdomain

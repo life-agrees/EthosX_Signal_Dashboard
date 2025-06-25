@@ -1,0 +1,7 @@
+name               = "ethosx-bybit-proxy"    # your Worker’s name
+main               = "src/index.js"          # relative path to index.js
+type               = "javascript"            # plain JS Worker
+compatibility_date = "2025-06-25"            # today’s date
+
+account_id   = "6dc3717d9f3393cbc7628d7869cc93f3"  # your Account ID
+workers_dev  = true                             # use workers.dev subdomain

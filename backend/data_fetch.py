@@ -23,7 +23,7 @@ from config import (
 from sentiment import get_token_sentiment
 
 # Bybit API configuration
-BYBIT_BASE_URL = "https://api.bybit.com"
+BYBIT_BASE_URL = "https://ethosx-bybit-proxy.ethosx-bybit.workers.dev"
 
 
 #load_dotenv()   # ← this reads your .env into os.environ
