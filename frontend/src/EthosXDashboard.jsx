@@ -13,7 +13,7 @@ const EthosXDashboard = () => {
   const [supportedTokens, setSupportedTokens] = useState(['BTC', 'ETH', 'SOL', 'DOGE']);
   
   // API Configuration
-  const API_BASE_URL = ''; // Adjust this to your server URL
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || window.location.origin;
   const [ws, setWs] = useState(null);
   
   // Real-time data state (now from API)
@@ -270,8 +270,10 @@ const EthosXDashboard = () => {
     }
 
     try {
-      const wsUrl = API_BASE_URL.replace('http://', 'ws://').replace('https://', 'wss://') + '/ws';
-      const newWs = new WebSocket(wsUrl);
+      const WS_URL = import.meta.env.VITE_WEBSOCKET_URL
+  || `${(window.location.protocol === 'https:' ? 'wss' : 'ws')}://${window.location.host}/ws`;
+      console.log(`🔌 WebSocket connecting to: ${WS_URL}`);
+      const newWs = new WebSocket(WS_URL);
       let pingInterval;
       
       newWs.onopen = () => {

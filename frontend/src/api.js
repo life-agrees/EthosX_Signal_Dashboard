@@ -1,12 +1,12 @@
 // src/api.js - FIXED VERSION
-const API_BASE_URL = process.env.NODE_ENV === 'production' 
-  ? 'https://ethosx-signal-dashboard.onrender.com'
-  : 'http://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || window.location.origin;
 
-const WS_BASE_URL = process.env.NODE_ENV === 'production'
-  ? 'wss://ethosx-signal-dashboard.onrender.com'
-  : 'ws://localhost:8000';
-
+const WS_BASE_URL = import.meta.env.VITE_WEBSOCKET_URL ||
+  `${(window.location.protocol === 'https:' ? 'wss' : 'ws')}://${window.location.host}/ws`;
+// Ensure the environment variables are set
+if (!API_BASE_URL) {
+  console.error('API_BASE_URL is not defined. Please check your environment variables.');
+}
 // Enhanced API call with better error handling
 export const apiCall = async (endpoint, options = {}) => {
   const url = `${API_BASE_URL}${endpoint}`;
@@ -72,9 +72,9 @@ export const getHealthStatus = async () => {
 
 // WebSocket connection
 export const createWebSocketConnection = () => {
-  const wsUrl = `${WS_BASE_URL}/ws`;
-  console.log(`🔌 WebSocket connecting to: ${wsUrl}`);
-  return new WebSocket(wsUrl);
+  const WS_URL = WS_BASE_URL;
+  console.log(`🔌 WebSocket connecting to: ${WS_URL}`);
+  return new WebSocket(WS_URL);
 };
 
 // Export the base URLs
