@@ -22,6 +22,10 @@ from config import (
 )
 from sentiment import get_token_sentiment
 
+# Bybit API configuration
+BYBIT_BASE_URL = "https://api.bybit.com"
+
+
 load_dotenv()   # ← this reads your .env into os.environ
 print("KEY:", os.getenv("BYBIT_API_KEY"))
 print("SECRET:", os.getenv("BYBIT_API_SECRET"))
@@ -42,15 +46,9 @@ def sign(params: dict) -> str:
     return hmac.new(API_SECRET.encode(), to_sign.encode(), hashlib.sha256).hexdigest()
 
 def public_get(path: str, params: dict) -> requests.Response:
-    params.update({
-        "apiKey":    API_KEY,
-        "timestamp": int(time.time() * 1000),
-    })
-    params["sign"] = sign(params)
-    return requests.get(BYBIT_BASE_URL + path, params=params, timeout=10)
+    # PUBLIC endpoints don't need authentication
+    return requests.get(BYBIT_BASE_URL + path, params=params, headers=HEADERS, timeout=10)
 
-# Bybit API configuration
-BYBIT_BASE_URL = "https://api.bybit.com"
 
 def fetch_funding_rate(symbol: str) -> float:
     """

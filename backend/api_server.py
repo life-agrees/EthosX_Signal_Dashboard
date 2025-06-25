@@ -664,8 +664,8 @@ async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time updates"""
     await manager.connect(websocket)
     try:
-        # park here until the client disconnects
-        await asyncio.Future()
+        while True:
+            await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
