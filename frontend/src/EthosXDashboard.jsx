@@ -10,7 +10,7 @@ const EthosXDashboard = () => {
   const [subscriberCount, setSubscriberCount] = useState(0);
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
   const [theme, setTheme] = useState('dark');
-  const [supportedTokens, setSupportedTokens] = useState(['BTC', 'ETH', 'SOL', 'DOGE']);
+  const [supportedTokens, setSupportedTokens] = useState(['BTC', 'SOL', 'DOGE', 'FART']);
   
   // API Configuration
   const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || window.location.origin;
