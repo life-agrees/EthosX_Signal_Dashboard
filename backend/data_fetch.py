@@ -46,8 +46,8 @@ def sign(params: dict) -> str:
     return hmac.new(API_SECRET.encode(), to_sign.encode(), hashlib.sha256).hexdigest()
 
 def public_get(path: str, params: dict) -> requests.Response:
-    # PUBLIC endpoints don't need authentication
-    return requests.get(BYBIT_BASE_URL + path, params=params, headers=HEADERS, timeout=10)
+    return requests.get(BYBIT_BASE_URL + path, params=params, timeout=10)
+
 
 
 def fetch_funding_rate(symbol: str) -> float:
