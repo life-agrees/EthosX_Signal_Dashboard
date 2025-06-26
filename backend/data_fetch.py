@@ -8,6 +8,7 @@ import socket
 from datetime import datetime, timedelta
 import ta
 import httpx
+from httpx import HTTPStatusError
 import asyncio
 import time
 import logging
@@ -26,6 +27,11 @@ from config import (
 )
 from sentiment import get_token_sentiment
 
+
+# fallback to official Bybit API if proxy fails
+# This is the official Bybit API endpoint:
+OFFICIAL_BYBIT = "https://api.bybit.com"
+
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -42,7 +48,7 @@ print("SECRET:", os.getenv("BYBIT_API_SECRET"))
 
 # Set up request headers for Bybit API calls
 HEADERS = {
-    "User-Agent": "Mozilla/5.0"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
 }
 
 
@@ -56,15 +62,30 @@ def sign(params: dict) -> str:
 
 
 async def public_get(path: str, params: dict) -> dict:
-    """Make a GET request to Bybit public API and return JSON data."""
-    url = BYBIT_BASE_URL + path
-    logger.info(f"Request {url} with params {params}")
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.get(url, params=params, headers=HEADERS)
-        logger.info(f"Status code: {response.status_code}")
-        response.raise_for_status()
-        return response.json()
+    """
+    1) Try the proxy.
+    2) If it returns 403, retry against the official Bybit API.
+    Raises on any other HTTP error.
+    """
+    proxy_url    = BYBIT_BASE_URL + path
+    official_url = OFFICIAL_BYBIT    + path
 
+    async with httpx.AsyncClient(timeout=30) as client:
+        # 1) proxy
+        resp = await client.get(proxy_url, params=params, headers=HEADERS)
+        logger.info(f"[data_fetch] proxy {proxy_url} → {resp.status_code}")
+        try:
+            resp.raise_for_status()
+        except HTTPStatusError as e:
+            if resp.status_code == 403:
+                # fallback to official
+                logger.warning(f"[data_fetch] proxy 403, retrying official {official_url}")
+                resp = await client.get(official_url, params=params, headers=HEADERS)
+                logger.info(f"[data_fetch] official {official_url} → {resp.status_code}")
+                resp.raise_for_status()
+            else:
+                raise
+        return resp.json()
 async def fetch_funding_rate(symbol: str) -> float:
     params = {"category": "linear", "symbol": symbol, "limit": 1}
     data = await public_get("/v5/market/funding/history", params)

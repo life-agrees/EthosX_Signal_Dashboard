@@ -2,6 +2,7 @@
 import os
 import asyncio
 import json
+import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
@@ -9,8 +10,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
+from httpx import HTTPStatusError
 import joblib
 from contextlib import asynccontextmanager
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Import your existing modules - UPDATE THIS IMPORT
 from models.predict import load_model, make_prediction
@@ -500,35 +506,28 @@ async def get_market_data(token: str):
     if token not in SUPPORTED_TOKENS:
         raise HTTPException(404, "Token not supported")
 
-    # Fix: Call with both path and params
-    raw = await public_get(
-        path="/v5/market/tickers",
-        params={
-            "category": "linear", 
-            "symbol": f"{token}USDT"
-        }
-    )
+    try:
+        raw = await public_get(
+            path="/v5/market/tickers",
+            params={"category": "linear", "symbol": f"{token}USDT"}
+        )
+    except HTTPStatusError as e:
+        # both proxy & official failed
+        logger.error(f"[api] market/{token} fetch failed: {e}")
+        raise HTTPException(503, "Unable to fetch market data right now")
 
-    # map it into your response model
-    data = {
-      "price":       float(raw["result"]["list"][0]["lastPrice"]),
-      "change_24h":  float(raw["result"]["list"][0]["price24hPcnt"]),
-      "volume_24h":  float(raw["result"]["list"][0]["volume24h"]),
-      "open_interest": float(raw["result"]["list"][0]["openInterestValue"]),
-      "funding_rate":  float(raw["result"]["list"][0]["fundingRate"]),
-      "timestamp":     datetime.now().isoformat()
-    }
-    market_data_cache[token] = data
-    print(f"[TRACE] Returning parsed data: {data}")
-    
-    return MarketDataResponse(
-        price=data['price'],
-        change_24h=data['change_24h'],
-        volume_24h=data['volume_24h'],
-        open_interest=data['open_interest'],
-        funding_rate=data['funding_rate'],
-        timestamp=data['timestamp']
-    ) 
+    # parse...
+    item = raw["result"]["list"][0]
+    data = MarketDataResponse(
+        price       = float(item["lastPrice"]),
+        change_24h  = float(item["price24hPcnt"]),
+        volume_24h  = float(item["volume24h"]),
+        open_interest = float(item["openInterestValue"]),
+        funding_rate  = float(item["fundingRate"]),
+        timestamp     = datetime.now().isoformat()
+    )
+    market_data_cache[token] = data.dict()
+    return data
 
 @app.get("/technical/{token}", response_model=TechnicalIndicatorsResponse)
 async def get_technical_indicators(token: str):
