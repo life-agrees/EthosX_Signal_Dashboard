@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
+import websockets
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 from httpx import HTTPStatusError
@@ -217,176 +218,50 @@ async def sentiment_manager():
             print(f"[ERROR] Sentiment manager error: {e}")
             await asyncio.sleep(300)  # 5 minutes on major error
 
-async def update_market_data():
-    """Background task to update market data every 15 seconds - FIXED for type errors"""
-    while True:
-        try:
-            for token in SUPPORTED_TOKENS:
-                try:
-                    symbol = PERP_SYMBOLS[token].upper()
-                    
-                    # CHANGED: Use Bybit function instead of Binance
-                    df = await get_bybit_klines(symbol, limit=100)
-                    print(f"Fetched data for {token}: {len(df)} rows")
-                    if df.empty:
-                        print(f"[WARN] No data available for {token} from Bybit")
-                        continue
-                    
-                    # FIX 1: Ensure all price/volume columns are properly converted to float
-                    # Convert ALL relevant columns to numeric, including timestamp if present
-                    numeric_columns = ['open', 'high', 'low', 'close', 'volume']
-                    for col in numeric_columns:
-                        if col in df.columns:
-                            df[col] = pd.to_numeric(df[col], errors='coerce')
-                    
-                    # FIX: Also convert timestamp column if it exists and is string-based
-                    if 'timestamp' in df.columns:
-                        # If timestamp is string, convert to datetime then to numeric timestamp
-                        try:
-                            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
-                            # Sort by timestamp to ensure proper order
-                            df = df.sort_values('timestamp')
-                        except Exception as e:
-                            print(f"[WARN] Timestamp conversion failed for {token}: {e}")
-                    
-                    # Remove any rows with NaN values that could cause comparison issues
-                    df = df.dropna(subset=['close'])
-                    
-                    # FIX: Reset index after dropping rows to avoid index comparison issues
-                    df = df.reset_index(drop=True)
-                    
-                    if df.empty:
-                        print(f"[WARN] No valid data after cleaning for {token}")
-                        continue
-                    
-                    current_price = float(df['close'].iloc[-1])
-                    
-                    # Calculate 24h change (using available data points)
-                    if len(df) >= 2:
-                        previous_price = float(df['close'].iloc[-2])
-                        change_24h = ((current_price - previous_price) / previous_price) * 100
-                    else:
-                        change_24h = 0.0
-                    
-                    # FIX 2: Ensure volume is numeric before summing
-                    if 'volume' in df.columns:
-                        volume_24h = float(df['volume'].sum())
-                    else:
-                        volume_24h = 0.0
-                    
-                    # CHANGED: Use Bybit functions with error handling
-                    try:
-                        funding_rate = await fetch_funding_rate(symbol)
-                        # Ensure funding_rate is a number
-                        funding_rate = float(funding_rate) if funding_rate is not None else 0.0
-                    except Exception as e:
-                        print(f"[WARN] Failed to fetch funding rate for {symbol}: {e}")
-                        funding_rate = 0.0
-                    
-                    try:
-                        open_interest = await fetch_open_interest(symbol)
-                        # Ensure open_interest is a number
-                        open_interest = float(open_interest) if open_interest is not None else 0.0
-                    except Exception as e:
-                        print(f"[WARN] Failed to fetch open interest for {symbol}: {e}")
-                        open_interest = 0.0
-                    
-                    # FIX 3: Technical indicators with proper type handling
-                    if len(df) >= 14:
-                        try:
-                            # Create a clean Series with proper numeric index
-                            close_prices = pd.Series(
-                                pd.to_numeric(df['close'], errors='coerce').values,
-                                index=range(len(df))
-                            ).dropna()
-                            
-                            if len(close_prices) >= 14:
-                                # Simple RSI calculation with type safety
-                                delta = close_prices.diff()
-                                gain = delta.where(delta > 0, 0).rolling(window=14, min_periods=14).mean()
-                                loss = (-delta.where(delta < 0, 0)).rolling(window=14, min_periods=14).mean()
-                                
-                                # Avoid division by zero
-                                rs = gain / loss.replace(0, 1e-10)
-                                rsi_series = 100 - (100 / (1 + rs))
-                                
-                                rsi_14 = float(rsi_series.iloc[-1]) if not pd.isna(rsi_series.iloc[-1]) else 50.0
-                                
-                                # Clamp RSI to valid range
-                                rsi_14 = max(0.0, min(100.0, rsi_14))
-                            else:
-                                rsi_14 = 50.0
-                        except Exception as e:
-                            print(f"[WARN] RSI calculation failed for {token}: {e}")
-                            rsi_14 = 50.0
-                    else:
-                        rsi_14 = 50.0
-                    
-                    # FIX 4: MACD calculation with type safety
-                    if len(df) >= 26:
-                        try:
-                            # Create a clean Series with proper numeric index
-                            close_prices = pd.Series(
-                                pd.to_numeric(df['close'], errors='coerce').values,
-                                index=range(len(df))
-                            ).dropna()
-                            
-                            if len(close_prices) >= 26:
-                                ema_12 = close_prices.ewm(span=12, min_periods=12).mean()
-                                ema_26 = close_prices.ewm(span=26, min_periods=26).mean()
-                                
-                                # Ensure both EMAs have values before subtracting
-                                if not ema_12.empty and not ema_26.empty and len(ema_12) > 0 and len(ema_26) > 0:
-                                    macd_diff = float(ema_12.iloc[-1] - ema_26.iloc[-1])
-                                    
-                                    # Handle NaN values
-                                    if pd.isna(macd_diff):
-                                        macd_diff = 0.0
-                                else:
-                                    macd_diff = 0.0
-                            else:
-                                macd_diff = 0.0
-                        except Exception as e:
-                            print(f"[WARN] MACD calculation failed for {token}: {e}")
-                            macd_diff = 0.0
-                    else:
-                        macd_diff = 0.0
-                    
-                    # Get sentiment score safely
-                    sentiment_score = sentiment_data.get(token, {}).get('score', 0.0)
-                    
-                    # FIX 5: Ensure all values are proper types before storing
-                    market_data_cache[token] = {
-                        'price': float(current_price),
-                        'change_24h': float(change_24h),
-                        'volume_24h': float(volume_24h),
-                        'open_interest': float(open_interest),
-                        'funding_rate': float(funding_rate),
-                        'rsi_14': float(rsi_14),
-                        'macd_diff': float(macd_diff),
-                        'sentiment': float(sentiment_score),
-                        'timestamp': datetime.now().isoformat()
-                    }
-                    
-                    await manager.broadcast({
-                        'type': 'market_data',
-                        'token': token,
-                        'data': market_data_cache[token]
-                    })
-                    
-                    # Small delay between tokens to avoid rate limiting
-                    await asyncio.sleep(0.2)
-                    
-                except Exception as e:
-                    print(f"Error updating market data for {token}: {e}")
-                    # Continue with next token instead of breaking the entire loop
-                    continue
-                
-        except Exception as e:
-            print(f"Error in market data update cycle: {e}")
-        
-        await asyncio.sleep(15)
+async def ws_market_data():
+    uri = "wss://stream.bybit.com/v5/public/linear"
+    # list of symbols you care about
+    topics = [f"kline.1.{sym}USDT" for sym in SUPPORTED_TOKENS]
 
+    async for socket in websockets.connect(uri):
+        try:
+            # subscribe to all your k-lines
+            await socket.send(json.dumps({
+                "op": "subscribe",
+                "args": topics
+            }))
+
+            async for message in socket:
+                msg = json.loads(message)
+                if msg.get("topic", "").startswith("kline.1."):
+                    # msg.data is a list of lists; last item is latest bar
+                    bar = msg["data"][-1]
+                    ts, open_, high, low, close, volume, _ = bar
+                    token = msg["topic"].split(".")[-1].replace("USDT", "")
+
+                    # build your market_data_cache entry
+                    market_data_cache[token] = {
+                        "price": float(close),
+                        "change_24h": 0.0,       # you can diff against a stored 24h bar
+                        "volume_24h": float(volume),
+                        "open_interest": 0.0,    # no OI on kline feeds; drop or leave zero
+                        "funding_rate": 0.0,     # you can still call fetch_funding_rate periodically
+                        "rsi_14": 0.0,           # compute on your rolling history if you need it
+                        "macd_diff": 0.0,
+                        "sentiment": sentiment_data.get(token, {}).get("score", 0.0),
+                        "timestamp": datetime.utcfromtimestamp(int(ts)//1000).isoformat()
+                    }
+
+                    # broadcast to all connected clients
+                    await manager.broadcast({
+                        "type": "market_data",
+                        "token": token,
+                        "data": market_data_cache[token]
+                    })
+        except Exception:
+            # on any failure—network hiccup, server drop—reloop and reconnect
+            await asyncio.sleep(5)
+            continue
 async def generate_predictions():
     """Background task to generate predictions every 15 minutes"""
     while True:
@@ -463,7 +338,8 @@ async def lifespan(app: FastAPI):
     
     # Start background tasks
     sentiment_task = asyncio.create_task(sentiment_manager())
-    market_task = asyncio.create_task(update_market_data())
+    market_task = asyncio.create_task(ws_market_data())
+
     prediction_task = asyncio.create_task(generate_predictions())
     
     print("✅ Server ready with Bybit data feed!")

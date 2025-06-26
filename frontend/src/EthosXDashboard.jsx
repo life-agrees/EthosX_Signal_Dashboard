@@ -263,116 +263,112 @@ const EthosXDashboard = () => {
     }
   };
 
-  // WebSocket connection for real-time updates
-  const connectWebSocket = useCallback(() => {
-    if (ws) {
-      ws.close();
-    }
+// WebSocket connection for real-time updates (Bybit public kline stream)
+const connectWebSocket = useCallback(() => {
+  // clean up any existing socket
+  if (ws) {
+    ws.close();
+  }
 
+  // Bybit public linear kline v5 stream
+  const BYBIT_WS =
+    import.meta.env.VITE_WEBSOCKET_URL ||
+    "wss://stream.bybit.com/v5/public/linear";
+  console.log(`🔌 WebSocket connecting to: ${BYBIT_WS}`);
+
+  const newWs = new WebSocket(BYBIT_WS);
+  let pingInterval;
+
+  newWs.onopen = () => {
+    console.log("WebSocket connected");
+    setConnectionStatus("connected");
+
+    // subscribe to 1m BTCUSDT candles
+    newWs.send(
+      JSON.stringify({
+        op: "subscribe",
+        args: ["kline.1.BTCUSDT"],
+      })
+    );
+
+    // optional keep-alive ping every 30s
+    pingInterval = window.setInterval(() => {
+      newWs.send(JSON.stringify({ op: "ping" }));
+    }, 30_000);
+  };
+
+  newWs.onmessage = (evt) => {
     try {
-      const WS_URL = import.meta.env.VITE_WEBSOCKET_URL
-  || `${(window.location.protocol === 'https:' ? 'wss' : 'ws')}://${window.location.host}/ws`;
-      console.log(`🔌 WebSocket connecting to: ${WS_URL}`);
-      const newWs = new WebSocket(WS_URL);
-      let pingInterval;
-      
-      newWs.onopen = () => {
-        console.log('WebSocket connected');
-        setConnectionStatus('connected');
-        // send initial ping
-        newWs.send(JSON.stringify({ type: 'ping' }));
-        // then ping every 30s to keep the socket alive
-        pingInterval = setInterval(() => {
-          newWs.send(JSON.stringify({ type: 'ping' }));
-        }, 30000);
-      };
-      
-      newWs.onmessage = (event) => {
-        try {
-          const message = JSON.parse(event.data);
-          
-          if (message.type === 'market_data') {
-            setMarketData(prev => ({
-              ...prev,
-              [message.token]: {
-                price: message.data.price,
-                change: message.data.change_24h,
-                volume: message.data.volume_24h,
-                oi: message.data.open_interest,
-                timestamp: message.data.timestamp
-              }
-            }));
-            
-            setTechnicalData(prev => ({
-              ...prev,
-              [message.token]: {
-                rsi: message.data.rsi_14,
-                macd: message.data.macd_diff,
-                sentiment: message.data.sentiment,
-                funding: message.data.funding_rate,
-                timestamp: message.data.timestamp
-              }
-            }));
-            
-            // Update price history for selected token
-            if (message.token === selectedToken) {
-              setPriceHistory(prev => {
-                const newPoint = {
-                  time: new Date().toLocaleTimeString(),
-                  price: message.data.price,
-                  volume: message.data.volume_24h
-                };
-                return [...prev.slice(-29), newPoint];
-              });
-            }
-          }
-          
-          if (message.type === 'prediction') {
-            const signalColorMap = {
-              'BUY': 'text-green-400',
-              'SELL': 'text-red-400',
-              'HOLD': 'text-yellow-400'
-            };
-            
-            const predictionData = {
-              ...message.data,
-              signalColor: signalColorMap[message.data.signal] || 'text-gray-400'
-            };
-            
-            if (message.token === selectedToken) {
-              setPrediction(predictionData);
-              setPredictionHistory(prev => [...prev.slice(-9), predictionData]);
-            }
-          }
-        } catch (error) {
-          console.error('WebSocket message parsing error:', error);
-        }
-      };
-      
-      newWs.onclose = () => {
-        console.log('WebSocket disconnected');
-        clearInterval(pingInterval);
-        setConnectionStatus('disconnected');
-        // Attempt to reconnect after 5 seconds
-        setTimeout(() => {
-          if (isAutoRefresh) {
-            connectWebSocket();
-          }
-        }, 5000);
-      };
-      
-      newWs.onerror = (error) => {
-        console.error('WebSocket error:', error);
-        setConnectionStatus('disconnected');
-        clearInterval(pingInterval);
-      };
-      
-      setWs(newWs);
-    } catch (error) {
-      console.error('Failed to connect WebSocket:', error);
-      setConnectionStatus('disconnected');
+      const msg = JSON.parse(evt.data);
+
+      // only handle kline updates for our symbol
+      if (
+        msg.topic === "kline.1.BTCUSDT" &&
+        Array.isArray(msg.data) &&
+        msg.data.length
+      ) {
+        const [candle] = msg.data;
+        const [
+          startMs,
+          open,
+          high,
+          low,
+          close,
+          volume,
+        ] = candle;
+
+        const timestamp = new Date(Number(startMs)).toISOString();
+        const closeF = parseFloat(close);
+        const prev = marketData.BTC;
+
+        // update marketData for BTC
+        setMarketData((md) => ({
+          ...md,
+          BTC: {
+            price: closeF,
+            change:
+              prev?.price != null
+                ? ((closeF - prev.price) / prev.price) * 100
+                : 0,
+            volume: parseFloat(volume),
+            oi: prev?.oi ?? 0,
+            timestamp,
+          },
+        }));
+
+        // append to priceHistory
+        setPriceHistory((hist) => [
+          ...hist.slice(-29),
+          {
+            time: new Date(Number(startMs)).toLocaleTimeString(),
+            price: closeF,
+            volume: parseFloat(volume),
+          },
+        ]);
+      }
+    } catch (err) {
+      console.error("WebSocket message parsing error:", err);
     }
-  }, [selectedToken, isAutoRefresh, ws]);
+  };
+
+  newWs.onclose = () => {
+    console.warn("WebSocket disconnected");
+    clearInterval(pingInterval);
+    setConnectionStatus("disconnected");
+    // try reconnecting
+    setTimeout(() => {
+      if (isAutoRefresh) connectWebSocket();
+    }, 5_000);
+  };
+
+  newWs.onerror = (err) => {
+    console.error("WebSocket error:", err);
+    newWs.close();
+  };
+
+  setWs(newWs);
+}, [ws, isAutoRefresh, marketData]);
+
 
   // Initialize data on component mount
   useEffect(() => {
