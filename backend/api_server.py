@@ -220,7 +220,7 @@ async def update_market_data():
                     symbol = PERP_SYMBOLS[token].upper()
                     
                     # CHANGED: Use Bybit function instead of Binance
-                    df = get_bybit_klines(symbol, limit=100)
+                    df = await get_bybit_klines(symbol, limit=100)
                     print(f"Fetched data for {token}: {len(df)} rows")
                     if df.empty:
                         print(f"[WARN] No data available for {token} from Bybit")
@@ -270,7 +270,7 @@ async def update_market_data():
                     
                     # CHANGED: Use Bybit functions with error handling
                     try:
-                        funding_rate = fetch_funding_rate(symbol)
+                        funding_rate = await fetch_funding_rate(symbol)
                         # Ensure funding_rate is a number
                         funding_rate = float(funding_rate) if funding_rate is not None else 0.0
                     except Exception as e:
@@ -278,7 +278,7 @@ async def update_market_data():
                         funding_rate = 0.0
                     
                     try:
-                        open_interest = fetch_open_interest(symbol)
+                        open_interest = await fetch_open_interest(symbol)
                         # Ensure open_interest is a number
                         open_interest = float(open_interest) if open_interest is not None else 0.0
                     except Exception as e:
@@ -398,17 +398,15 @@ async def generate_predictions():
                 data = market_data_cache[token]
                 sentiment_score = sentiment_data.get(token, {}).get('score', 0.0)
                 
-                features = {
-                    'close_return': 0.001,
-                    'volume_change': 0.05,
-                    'sentiment': sentiment_score,
-                    'funding_rate': data['funding_rate'],
-                    'open_interest': data['open_interest'],
-                    'return_15m': 0.01,
-                    'volume_15m': data['volume_24h'] / 96,
-                    'rsi_14': data['rsi_14'],
-                    'macd_diff': data['macd_diff']
-                }
+                features = {'close_return':  data.get('close_return', 0.0),
+                'volume_change': data.get('volume_change', 0.0),
+                'return_15m':    data.get('return_15m', 0.0),
+                'volume_15m':    data.get('volume_15m', 0.0),
+                'funding_rate':  data['funding_rate'],
+                'open_interest': data['open_interest'],
+                'rsi_14':        data['rsi_14'],
+                'macd_diff':     data['macd_diff'],
+                'sentiment':     sentiment_score}
                 
                 # Use model manager - users never see which model is used
                 model_to_use, _ = model_manager.get_prediction_model()
