@@ -7,6 +7,7 @@ from typing import Dict, List, Optional
 from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
+from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 import joblib
 from contextlib import asynccontextmanager
@@ -522,7 +523,7 @@ async def get_market_data(token: str):
         open_interest=data['open_interest'],
         funding_rate=data['funding_rate'],
         timestamp=data['timestamp']
-    )
+    ) 
 
 @app.get("/technical/{token}", response_model=TechnicalIndicatorsResponse)
 async def get_technical_indicators(token: str):
