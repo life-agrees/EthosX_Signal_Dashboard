@@ -6,6 +6,7 @@ pandas>=2.0.0
 joblib>=1.2.0
 python-dotenv>=1.0.0
 requests>=2.28.0
+httpx
 textblob>=0.17.1
 ta>=0.7.0
 pydantic[email]
