@@ -17,7 +17,7 @@ from models.predict import load_model, make_prediction
 from sentiment import get_token_sentiment, get_multiple_sentiments, get_sentiment_status
 from alerts import add_subscriber, get_subscribers, maybe_alert, CONFIDENCE_THRESHOLD
 # CHANGED: Import from new Bybit data_fetch module
-from data_fetch import fetch_funding_rate, fetch_open_interest, get_bybit_klines
+from data_fetch import fetch_funding_rate, fetch_open_interest, get_bybit_klines,BYBIT_BASE_URL,public_get
 from config import SUPPORTED_TOKENS, PERP_SYMBOLS, LABEL_HORIZON
 
 # Simplified Pydantic models - NO model selection exposed to users
@@ -499,22 +499,28 @@ async def get_supported_tokens():
 
 @app.get("/market/{token}", response_model=MarketDataResponse)
 async def get_market_data(token: str):
-    """Get current market data for a token"""
     if token not in SUPPORTED_TOKENS:
-        raise HTTPException(status_code=404, detail="Token not supported")
-    
-    # Try to get last‑known data; if missing, return a safe default
-    data = market_data_cache.get(token)
-    if not data:
-        # Fallback to a default structure if no data is available
-        data = {
-            'price': 0.0,
-            'change_24h': 0.0,
-            'volume_24h': 0.0,
-            'open_interest': 0.0,
-            'funding_rate': 0.0,
-            'timestamp': datetime.now().isoformat()
-        }
+        raise HTTPException(404, "Token not supported")
+
+    # → TRACE: what URL are we calling?
+    trace_url = f"{BYBIT_BASE_URL}/v5/market/tickers?category=linear&symbol={token}USDT"
+    print(f"[TRACE] Fetching market for {token} via {trace_url}")
+
+    # do the real fetch
+    raw = await public_get(token)  
+    print(f"[TRACE] Backend raw response: {raw}")
+
+    # map it into your response model
+    data = {
+      "price":       float(raw["result"]["list"][0]["lastPrice"]),
+      "change_24h":  float(raw["result"]["list"][0]["price24hPcnt"]),
+      "volume_24h":  float(raw["result"]["list"][0]["volume24h"]),
+      "open_interest": float(raw["result"]["list"][0]["openInterestValue"]),
+      "funding_rate":  float(raw["result"]["list"][0]["fundingRate"]),
+      "timestamp":     datetime.now().isoformat()
+    }
+    market_data_cache[token] = data
+    print(f"[TRACE] Returning parsed data: {data}")
     
     return MarketDataResponse(
         price=data['price'],
