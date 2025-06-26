@@ -42,7 +42,7 @@ print("SECRET:", os.getenv("BYBIT_API_SECRET"))
 
 # Set up request headers for Bybit API calls
 HEADERS = {
-    'User-Agent': 'ethosx-fetcher'
+    "User-Agent": "Mozilla/5.0"
 }
 
 
@@ -60,7 +60,7 @@ async def public_get(path: str, params: dict) -> dict:
     url = BYBIT_BASE_URL + path
     logger.info(f"Request {url} with params {params}")
     async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.get(url, params=params)
+        response = await client.get(url, params=params, headers=HEADERS)
         logger.info(f"Status code: {response.status_code}")
         response.raise_for_status()
         return response.json()
