@@ -7,6 +7,8 @@ import pandas as pd
 import socket
 from datetime import datetime, timedelta
 import ta
+import httpx
+import asyncio
 import time
 import hashlib, hmac, time
 import warnings
@@ -44,9 +46,12 @@ def sign(params: dict) -> str:
     to_sign = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
     return hmac.new(API_SECRET.encode(), to_sign.encode(), hashlib.sha256).hexdigest()
 
-def public_get(path: str, params: dict) -> requests.Response:
-    return requests.get(BYBIT_BASE_URL + path, params=params, timeout=10)
 
+
+async def public_get(path: str, params: dict):
+    async with httpx.AsyncClient() as client:
+        response = await client.get(BYBIT_BASE_URL + path, params=params, timeout=10)
+        return response.json()
 
 
 def fetch_funding_rate(symbol: str) -> float:

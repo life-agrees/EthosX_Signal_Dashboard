@@ -13,7 +13,7 @@ const EthosXDashboard = () => {
   const [supportedTokens, setSupportedTokens] = useState(['BTC', 'SOL', 'DOGE', 'FART']);
   
   // API Configuration
-  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || window.location.origin;
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "https://ethosx-bybit-proxy.ethosx-bybit.workers.dev";
   const [ws, setWs] = useState(null);
   
   // Real-time data state (now from API)

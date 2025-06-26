@@ -502,13 +502,14 @@ async def get_market_data(token: str):
     if token not in SUPPORTED_TOKENS:
         raise HTTPException(404, "Token not supported")
 
-    # → TRACE: what URL are we calling?
-    trace_url = f"{BYBIT_BASE_URL}/v5/market/tickers?category=linear&symbol={token}USDT"
-    print(f"[TRACE] Fetching market for {token} via {trace_url}")
-
-    # do the real fetch
-    raw = await public_get(token)  
-    print(f"[TRACE] Backend raw response: {raw}")
+    # Fix: Call with both path and params
+    raw = await public_get(
+        path="/v5/market/tickers",
+        params={
+            "category": "linear", 
+            "symbol": f"{token}USDT"
+        }
+    )
 
     # map it into your response model
     data = {
