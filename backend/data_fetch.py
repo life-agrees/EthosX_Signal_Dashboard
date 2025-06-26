@@ -48,10 +48,9 @@ print("SECRET:", os.getenv("BYBIT_API_SECRET"))
 
 # Set up request headers for Bybit API calls
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-    "Content-Type": "application/json",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    "Accept":       "application/json",
 }
-
 
 API_KEY    = os.getenv("BYBIT_API_KEY")
 API_SECRET = os.getenv("BYBIT_API_SECRET")
@@ -70,6 +69,8 @@ async def public_get(path: str, params: dict) -> dict:
     """
     proxy_url    = BYBIT_BASE_URL + path
     official_url = OFFICIAL_BYBIT    + path
+
+    logger.info(f"→ GET {proxy_url} params={params}")    
 
     async with httpx.AsyncClient(timeout=30) as client:
         # 1) proxy
