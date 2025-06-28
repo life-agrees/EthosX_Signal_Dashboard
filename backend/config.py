@@ -16,8 +16,8 @@ load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 if not os.getenv("BYBIT_API_KEY") or not os.getenv("BYBIT_API_SECRET"):
     logging.error("BYBIT_API_KEY and BYBIT_API_SECRET must be set in the .env file")
     sys.exit(1)
-API_KEY    = os.getenv("BYBIT_API_KEY")
-API_SECRET = os.getenv("BYBIT_API_SECRET")
+#API_KEY    = os.getenv("BYBIT_API_KEY")
+#API_SECRET = os.getenv("BYBIT_API_SECRET")
 
 TWITTER_BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN")
 SMTP_SERVER          = os.getenv("SMTP_SERVER")
@@ -33,6 +33,12 @@ PERP_SYMBOLS = {
     "SOL": "SOLUSDT",   # Solana USDT perpetual
     "DOGE": "DOGEUSDT", # Dogecoin USDT perpetual
     "FART": "FARTCOINUSDT"  # Fartcoin USDT perpetual
+}
+COINGECKO_SYMBOLS = {
+    "BTC": "bitcoin",
+    "SOL": "solana", 
+    "DOGE": "dogecoin",
+    "FART": "fartcoin"
 }
 
 BYBIT_BASE_URL = "https://api.bybit.com"

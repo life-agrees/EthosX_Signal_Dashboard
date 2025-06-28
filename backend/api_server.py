@@ -1,33 +1,39 @@
-# api_server_bybit.py - Updated for Bybit API
+# api_server.py - Aligned with data_fetch.py
 import os
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
-import websockets
-from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
-from httpx import HTTPStatusError
 import joblib
 from contextlib import asynccontextmanager
+import ta
+import numpy as np
+
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Import your existing modules - UPDATE THIS IMPORT
+# Import your existing modules - ALIGNED WITH data_fetch.py
 from models.predict import load_model, make_prediction
 from sentiment import get_token_sentiment, get_multiple_sentiments, get_sentiment_status
 from alerts import add_subscriber, get_subscribers, maybe_alert, CONFIDENCE_THRESHOLD
-# CHANGED: Import from new Bybit data_fetch module
-from data_fetch import fetch_funding_rate, fetch_open_interest, get_bybit_klines,BYBIT_BASE_URL,public_get
-from config import SUPPORTED_TOKENS, PERP_SYMBOLS, LABEL_HORIZON
+# ALIGNED: Import actual functions from data_fetch.py
+from data_fetch import (
+    get_coingecko_spot_data, 
+    fetch_derivatives_data,
+    build_token_features,
+    make_request_with_retry
+)
+from config import SUPPORTED_TOKENS, PERP_SYMBOLS, LABEL_HORIZON, COINGECKO_SYMBOLS
 
-# Simplified Pydantic models - NO model selection exposed to users
+# Pydantic models remain the same...
 class PredictionRequest(BaseModel):  
     token: str
 
@@ -36,8 +42,8 @@ class PredictionResponse(BaseModel):
     confidence: float
     timestamp: str
     token: str
-    # Removed 'model' field - users don't need to know
     features: Dict[str, float]
+
 
 class SubscriptionRequest(BaseModel):
     email: EmailStr
@@ -57,12 +63,11 @@ class TechnicalIndicatorsResponse(BaseModel):
     funding_rate: float
     timestamp: str
 
-# Smart Model Manager - handles all model complexity internally
+# Model Manager remains the same...
 class ModelManager:
     def __init__(self):
         self.models = {}
-        self.model_priority = ["RandomForest", "XGBoost", #"LogisticRegression"
-        ]
+        self.model_priority = ["XGBoost", "RandomForest"]
         self.primary_model = None
         self.primary_model_name = None
     
@@ -70,11 +75,9 @@ class ModelManager:
         """Load models in priority order"""
         loaded_models = []
         
-        # Try to load models in priority order
         model_paths = {
-            "RandomForest": "models/model.pkl",
             "XGBoost": "models/xgb_model.pkl",
-            #"LogisticRegression": "models/lr_model.pkl"
+            "RandomForest": "models/model.pkl",
         }
         
         for model_name in self.model_priority:
@@ -84,7 +87,6 @@ class ModelManager:
                     loaded_models.append(model_name)
                     print(f"✓ Loaded {model_name} model")
                     
-                    # Set first successfully loaded model as primary
                     if self.primary_model is None:
                         self.primary_model = self.models[model_name]
                         self.primary_model_name = model_name
@@ -94,22 +96,19 @@ class ModelManager:
                     print(f"✗ Failed to load {model_name}: {e}")
         
         if not self.models:
-            print("⚠️  WARNING: No models loaded! Predictions will not be available.")
+            print("⚠️  WARNING: No models loaded!")
             return False
         
         print(f"📊 Model system ready: {len(loaded_models)} models loaded")
         return True
     
     def get_prediction_model(self):
-        """Get the best model for predictions"""
         return self.primary_model, self.primary_model_name
     
     def is_available(self):
-        """Check if prediction service is available"""
         return self.primary_model is not None
     
     def get_status(self):
-        """Get model system status for health checks"""
         return {
             "available": self.is_available(),
             "primary_model": self.primary_model_name,
@@ -117,13 +116,90 @@ class ModelManager:
             "loaded_models": list(self.models.keys())
         }
 
+# ALIGNED: Updated market data functions using data_fetch.py functions
+async def get_current_price(token: str) -> Dict[str, float]:
+    """Get current price using same method as data_fetch.py"""
+    try:
+        df = await get_coingecko_spot_data(token, days=1)
+        if df.empty:
+            return {}
+        
+        latest = df.iloc[-1]
+        previous = df.iloc[-2] if len(df) > 1 else latest
+        
+        change_24h = ((latest['close'] - previous['close']) / previous['close'] * 100) if previous['close'] != 0 else 0.0
+        
+        return {
+            "price": float(latest['close']),
+            "change_24h": float(change_24h),
+            "volume_24h": float(latest.get('volume', 0)),
+            "high_24h": float(latest.get('high', latest['close'])),
+            "low_24h": float(latest.get('low', latest['close']))
+        }
+    except Exception as e:
+        logger.error(f"Error getting price for {token}: {e}")
+        return {}
+
+async def calculate_real_time_features(token: str) -> Dict[str, float]:
+    """Calculate features using same method as data_fetch.py"""
+    try:
+        # Get recent spot data (same as data_fetch.py)
+        df = await get_coingecko_spot_data(token, days=7)
+        if df.empty or len(df) < 15:
+            logger.warning(f"Insufficient data for {token}")
+            return {}
+        
+        # Calculate features exactly like data_fetch.py
+        df['close_return'] = df['close'].pct_change()
+        df['volume_change'] = df['volume'].pct_change()
+        
+        window_size = min(15, max(5, len(df) // 3))
+        df['return_15m'] = df['close'].rolling(window_size, min_periods=1).apply(
+            lambda x: (x.iloc[-1] / x.iloc[0]) - 1 if len(x) > 1 else 0.0
+        )
+        df['volume_15m'] = df['volume'].rolling(window_size, min_periods=1).sum()
+        
+        # Technical indicators (same as data_fetch.py)
+        if len(df) >= 14:
+            rsi = ta.momentum.RSIIndicator(df['close'], window=14)
+            df['rsi_14'] = rsi.rsi()
+        else:
+            df['rsi_14'] = 50.0
+            
+        macd = ta.trend.MACD(df['close'])
+        df['macd_diff'] = macd.macd_diff()
+        
+        # Get derivatives data (same as data_fetch.py)
+        derivatives_data = await fetch_derivatives_data(token)
+        
+        # Get sentiment
+        sentiment_score = sentiment_data.get(token, {}).get('score', 0.0)
+        
+        latest = df.iloc[-1]
+        
+        return {
+            'close_return': float(latest.get('close_return', 0.0)) if not pd.isna(latest.get('close_return', 0.0)) else 0.0,
+            'volume_change': float(latest.get('volume_change', 0.0)) if not pd.isna(latest.get('volume_change', 0.0)) else 0.0,
+            'return_15m': float(latest.get('return_15m', 0.0)) if not pd.isna(latest.get('return_15m', 0.0)) else 0.0,
+            'volume_15m': float(latest.get('volume_15m', 0.0)) if not pd.isna(latest.get('volume_15m', 0.0)) else 0.0,
+            'rsi_14': float(latest.get('rsi_14', 50.0)) if not pd.isna(latest.get('rsi_14', 50.0)) else 50.0,
+            'macd_diff': float(latest.get('macd_diff', 0.0)) if not pd.isna(latest.get('macd_diff', 0.0)) else 0.0,
+            'funding_rate': derivatives_data.get('funding_rate', 0.0),
+            'open_interest': derivatives_data.get('open_interest', 0.0),
+            'sentiment': sentiment_score
+        }
+        
+    except Exception as e:
+        logger.error(f"Error calculating features for {token}: {e}")
+        return {}
+
 # Global instances
 model_manager = ModelManager()
 market_data_cache = {}
 prediction_cache = {}
 sentiment_data = {}
 
-# WebSocket connection manager
+# WebSocket connection manager (same as before)
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
@@ -147,12 +223,11 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-# Background tasks (updated for Bybit)
+# ALIGNED: Updated background tasks
 async def sentiment_manager():
-    """Improved sentiment manager with exponential backoff"""
+    """Same sentiment manager as before"""
     print("[INFO] Starting sentiment manager...")
     
-    # Rate limiting state
     last_successful_request = {}
     consecutive_failures = {}
     
@@ -162,23 +237,16 @@ async def sentiment_manager():
                 try:
                     current_time = datetime.utcnow()
                     
-                    # Check if we should skip this token due to recent failures
                     if token in consecutive_failures:
                         failure_count = consecutive_failures[token]
                         if failure_count >= 3:
-                            # Exponential backoff: wait longer after multiple failures
-                            wait_time = min(2 ** failure_count * 60, 3600)  # Max 1 hour
+                            wait_time = min(2 ** failure_count * 60, 3600)
                             last_attempt = last_successful_request.get(token, current_time - timedelta(hours=2))
                             if (current_time - last_attempt).total_seconds() < wait_time:
-                                print(f"[INFO] Skipping {token} due to backoff (failures: {failure_count})")
                                 continue
                     
-                    print(f"[INFO] Attempting sentiment update for {token}")
-                    
-                    # Try to get sentiment with timeout
                     sentiment_score = get_token_sentiment(token)
                     
-                    # Success - reset failure count
                     consecutive_failures.pop(token, None)
                     last_successful_request[token] = current_time
                     
@@ -187,88 +255,71 @@ async def sentiment_manager():
                         'last_updated': current_time,
                         'status': 'success'
                     }
-                    print(f"[INFO] Updated sentiment for {token}: {sentiment_score:.3f}")
                     
-                    # Longer delay between successful requests to avoid rate limits
-                    await asyncio.sleep(90)  # 1.5 minutes between tokens
+                    await asyncio.sleep(90)
                     
                 except Exception as e:
-                    print(f"[ERROR] Failed to update sentiment for {token}: {e}")
-                    
-                    # Track consecutive failures
                     consecutive_failures[token] = consecutive_failures.get(token, 0) + 1
-                    
-                    # Set error state
                     if token not in sentiment_data:
                         sentiment_data[token] = {
                             'score': 0.0,
                             'last_updated': current_time,
                             'status': 'error'
                         }
-                    else:
-                        sentiment_data[token]['status'] = 'error'
-                    
-                    # Wait longer after errors
-                    await asyncio.sleep(120)  # 2 minutes after error
+                    await asyncio.sleep(120)
             
-            print("[INFO] Sentiment cycle complete. Waiting 45 minutes for next cycle...")
-            await asyncio.sleep(45 * 60)  # 45 minutes between full cycles
+            await asyncio.sleep(45 * 60)
             
         except Exception as e:
             print(f"[ERROR] Sentiment manager error: {e}")
-            await asyncio.sleep(300)  # 5 minutes on major error
+            await asyncio.sleep(300)
 
-async def ws_market_data():
-    uri = "wss://stream.bybit.com/v5/public/linear"
-    # list of symbols you care about
-    topics = [f"kline.1.{sym}USDT" for sym in SUPPORTED_TOKENS]
-
-    async for socket in websockets.connect(uri):
-        try:
-            # subscribe to all your k-lines
-            await socket.send(json.dumps({
-                "op": "subscribe",
-                "args": topics
-            }))
-
-            async for message in socket:
-                msg = json.loads(message)
-                if msg.get("topic", "").startswith("kline.1."):
-                    # msg.data is a list of lists; last item is latest bar
-                    bar = msg["data"][-1]
-                    ts, open_, high, low, close, volume, _ = bar
-                    token = msg["topic"].split(".")[-1].replace("USDT", "")
-
-                    # build your market_data_cache entry
-                    market_data_cache[token] = {
-                        "price": float(close),
-                        "change_24h": 0.0,       # you can diff against a stored 24h bar
-                        "volume_24h": float(volume),
-                        "open_interest": 0.0,    # no OI on kline feeds; drop or leave zero
-                        "funding_rate": 0.0,     # you can still call fetch_funding_rate periodically
-                        "rsi_14": 0.0,           # compute on your rolling history if you need it
-                        "macd_diff": 0.0,
-                        "sentiment": sentiment_data.get(token, {}).get("score", 0.0),
-                        "timestamp": datetime.utcfromtimestamp(int(ts)//1000).isoformat()
-                    }
-
-                    # broadcast to all connected clients
-                    await manager.broadcast({
-                        "type": "market_data",
-                        "token": token,
-                        "data": market_data_cache[token]
-                    })
-        except Exception:
-            # on any failure—network hiccup, server drop—reloop and reconnect
-            await asyncio.sleep(5)
-            continue
-async def generate_predictions():
-    """Background task to generate predictions every 15 minutes"""
+async def market_data_updater():
+    """ALIGNED: Updated to use data_fetch.py functions"""
+    print("[INFO] Starting market data updater (aligned with data_fetch.py)...")
+    
     while True:
         try:
-            # Skip if no models available
+            for token in SUPPORTED_TOKENS:
+                try:
+                    # Use aligned functions
+                    price_data = await get_current_price(token)
+                    features = await calculate_real_time_features(token)
+                    
+                    if price_data and features:
+                        # Build market data cache entry
+                        market_data_cache[token] = {
+                            **price_data,
+                            **features,
+                            "timestamp": datetime.utcnow().isoformat()
+                        }
+                        
+                        # Broadcast to WebSocket clients
+                        await manager.broadcast({
+                            "type": "market_data",
+                            "token": token,
+                            "data": market_data_cache[token]
+                        })
+                        
+                        print(f"[INFO] Updated market data for {token}: ${price_data.get('price', 0):.4f}")
+                        
+                except Exception as e:
+                    print(f"[ERROR] Failed to update market data for {token}: {e}")
+                
+                await asyncio.sleep(5)  # Rate limiting
+            
+            print("[INFO] Market data cycle complete. Waiting 2 minutes...")
+            await asyncio.sleep(120)
+            
+        except Exception as e:
+            print(f"[ERROR] Market data updater error: {e}")
+            await asyncio.sleep(300)
+
+async def generate_predictions():
+    """ALIGNED: Updated to use proper features"""
+    while True:
+        try:
             if not model_manager.is_available():
-                print("[WARNING] No models available for predictions")
                 await asyncio.sleep(LABEL_HORIZON * 60)
                 continue
             
@@ -276,35 +327,37 @@ async def generate_predictions():
                 if token not in market_data_cache:
                     continue
                 
+                # Use the properly calculated features
                 data = market_data_cache[token]
-                sentiment_score = sentiment_data.get(token, {}).get('score', 0.0)
                 
-                features = {'close_return':  data.get('close_return', 0.0),
-                'volume_change': data.get('volume_change', 0.0),
-                'return_15m':    data.get('return_15m', 0.0),
-                'volume_15m':    data.get('volume_15m', 0.0),
-                'funding_rate':  data['funding_rate'],
-                'open_interest': data['open_interest'],
-                'rsi_14':        data['rsi_14'],
-                'macd_diff':     data['macd_diff'],
-                'sentiment':     sentiment_score}
+                # Extract features in the exact format expected by XGBoost model
+                features = {
+                    'close_return': data.get('close_return', 0.0),
+                    'volume_change': data.get('volume_change', 0.0),
+                    'sentiment': data.get('sentiment', 0.0),
+                    'funding_rate': data.get('funding_rate', 0.0),
+                    'open_interest': data.get('open_interest', 0.0),
+                    'return_15m': data.get('return_15m', 0.0),
+                    'volume_15m': data.get('volume_15m', 0.0),
+                    'rsi_14': data.get('rsi_14', 50.0),
+                    'macd_diff': data.get('macd_diff', 0.0)
+                }
                 
-                # Use model manager - users never see which model is used
                 model_to_use, _ = model_manager.get_prediction_model()
                 
                 if model_to_use is not None:
                     label, confidence = make_prediction(model_to_use, token, features)
                     
-                    signal_map = {-1: "SELL", 0: "HOLD", 1: "BUY"}
-                    signal = signal_map.get(label, "HOLD")
+                    signal_map = {0: "SELL", 1: "BUY"}
+                    signal = signal_map.get(label, "SELL")
                     
                     prediction = {
                         'signal': signal,
                         'confidence': confidence,
                         'timestamp': datetime.now().isoformat(),
                         'token': token,
-                        'features': features
-                        # No model name exposed to users
+                        'features': features,
+                        #'model': model_manager.primary_model_name if model_manager.primary_model else "None"
                     }
                     
                     prediction_cache[token] = prediction
@@ -318,7 +371,8 @@ async def generate_predictions():
                     await manager.broadcast({
                         'type': 'prediction',
                         'token': token,
-                        'data': prediction
+                        'data': prediction,
+
                     })
                     
         except Exception as e:
@@ -326,34 +380,29 @@ async def generate_predictions():
         
         await asyncio.sleep(LABEL_HORIZON * 60)
 
-# Startup event with simplified model loading
+# Startup and FastAPI app setup (same as before)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Load models on startup
-    print("🚀 Starting EthosX API Server with Bybit integration...")
+    print("🚀 Starting EthosX API Server (aligned with data_fetch.py)...")
     success = model_manager.load_models()
     
     if not success:
         print("⚠️  Server starting without prediction capabilities")
     
-    # Start background tasks
     sentiment_task = asyncio.create_task(sentiment_manager())
-    market_task = asyncio.create_task(ws_market_data())
-
+    market_task = asyncio.create_task(market_data_updater())
     prediction_task = asyncio.create_task(generate_predictions())
     
-    print("✅ Server ready with Bybit data feed!")
+    print("✅ Server ready with aligned data pipeline!")
     yield
     
-    # Cleanup
     sentiment_task.cancel()
     market_task.cancel()
     prediction_task.cancel()
 
-# Create FastAPI app
 app = FastAPI(
     title="EthosX API",
-    description="Real-time trading signals and market data API powered by Bybit",
+    description="Real-time trading signals and market data API (aligned with data_fetch.py)",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -366,15 +415,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# API Routes (same as before, but now powered by Bybit data)
-
+# API Routes (updated for alignment)
 @app.get("/")
 async def root():
-    return {"message": "EthosX API Server", "status": "running", "data_source": "Bybit"}
+    return {"message": "EthosX API Server", "status": "running", "aligned": "data_fetch.py"}
 
 @app.get("/tokens")
 async def get_supported_tokens():
-    """Get list of supported tokens"""
     return {"tokens": SUPPORTED_TOKENS}
 
 @app.get("/market/{token}", response_model=MarketDataResponse)
@@ -383,27 +430,28 @@ async def get_market_data(token: str):
         raise HTTPException(404, "Token not supported")
 
     try:
-        raw = await public_get(
-            path="/v5/market/tickers",
-            params={"category": "linear", "symbol": f"{token}USDT"}
+        price_data = await get_current_price(token)
+        
+        if not price_data:
+            raise HTTPException(503, "Unable to fetch market data")
+        
+        # Get derivatives data using data_fetch.py function
+        derivatives_data = await fetch_derivatives_data(token)
+        
+        data = MarketDataResponse(
+            price=price_data.get("price", 0.0),
+            change_24h=price_data.get("change_24h", 0.0),
+            volume_24h=price_data.get("volume_24h", 0.0),
+            open_interest=derivatives_data.get("open_interest", 0.0),
+            funding_rate=derivatives_data.get("funding_rate", 0.0),
+            timestamp=datetime.now().isoformat()
         )
-    except HTTPStatusError as e:
-        # both proxy & official failed
-        logger.error(f"[api] market/{token} fetch failed: {e}")
+        
+        return data
+        
+    except Exception as e:
+        logger.error(f"Market data fetch failed for {token}: {e}")
         raise HTTPException(503, "Unable to fetch market data right now")
-
-    # parse...
-    item = raw["result"]["list"][0]
-    data = MarketDataResponse(
-        price       = float(item["lastPrice"]),
-        change_24h  = float(item["price24hPcnt"]),
-        volume_24h  = float(item["volume24h"]),
-        open_interest = float(item["openInterestValue"]),
-        funding_rate  = float(item["fundingRate"]),
-        timestamp     = datetime.now().isoformat()
-    )
-    market_data_cache[token] = data.dict()
-    return data
 
 @app.get("/technical/{token}", response_model=TechnicalIndicatorsResponse)
 async def get_technical_indicators(token: str):
@@ -412,7 +460,6 @@ async def get_technical_indicators(token: str):
 
     data = market_data_cache.get(token)
     if not data:
-        # fallback: neutral indicators + timestamp
         return TechnicalIndicatorsResponse(
             rsi_14=50.0,
             macd_diff=0.0,
@@ -422,47 +469,34 @@ async def get_technical_indicators(token: str):
         )
 
     return TechnicalIndicatorsResponse(
-        rsi_14=data['rsi_14'],
-        macd_diff=data['macd_diff'],
-        sentiment=data['sentiment'],
-        funding_rate=data['funding_rate'],
+        rsi_14=data.get('rsi_14', 50.0),
+        macd_diff=data.get('macd_diff', 0.0),
+        sentiment=data.get('sentiment', 0.0),
+        funding_rate=data.get('funding_rate', 0.0),
         timestamp=data['timestamp']
     )
 
 @app.post("/predict", response_model=PredictionResponse)
 async def predict_signal(request: PredictionRequest):
-    """Generate a trading signal prediction - model selection handled automatically"""
+    """Generate prediction using aligned features"""
     if request.token not in SUPPORTED_TOKENS:
         raise HTTPException(status_code=404, detail="Token not supported")
     
     if not model_manager.is_available():
         raise HTTPException(status_code=503, detail="Prediction service unavailable")
     
-    if request.token not in market_data_cache:
-        raise HTTPException(status_code=503, detail="Market data not available")
-    
     try:
-        data = market_data_cache[request.token]
-        sentiment_score = sentiment_data.get(request.token, {}).get('score', 0.0)
+        # Calculate real-time features using same method as data_fetch.py
+        features = await calculate_real_time_features(request.token)
         
-        features = {
-            'close_return': 0.001,
-            'volume_change': 0.05,
-            'sentiment': sentiment_score,
-            'funding_rate': data['funding_rate'],
-            'open_interest': data['open_interest'],
-            'return_15m': 0.01,
-            'volume_15m': data['volume_24h'] / 96,
-            'rsi_14': data['rsi_14'],
-            'macd_diff': data['macd_diff']
-        }
+        if not features:
+            raise HTTPException(status_code=503, detail="Unable to calculate features")
         
-        # Model selection is completely hidden from user
         model_to_use, _ = model_manager.get_prediction_model()
         label, confidence = make_prediction(model_to_use, request.token, features)
         
-        signal_map = {-1: "SELL", 0: "HOLD", 1: "BUY"}
-        signal = signal_map.get(label, "HOLD")
+        signal_map = {0: "SELL", 1: "BUY"}
+        signal = signal_map.get(label, "SELL")
         
         if confidence >= CONFIDENCE_THRESHOLD:
             maybe_alert(confidence, request.token, signal)
@@ -478,9 +512,9 @@ async def predict_signal(request: PredictionRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
 
+# Rest of the endpoints remain the same...
 @app.post("/subscribe")
 async def subscribe_email(request: SubscriptionRequest):
-    """Subscribe to email alerts"""
     try:
         added = add_subscriber(str(request.email))
         if added:
@@ -492,7 +526,6 @@ async def subscribe_email(request: SubscriptionRequest):
 
 @app.get("/subscribers")
 async def get_subscriber_count():
-    """Get number of subscribers"""
     try:
         subscribers = get_subscribers()
         return {"count": len(subscribers)}
@@ -506,7 +539,6 @@ async def get_latest_prediction(token: str):
 
     pred = prediction_cache.get(token)
     if not pred:
-        # fallback prediction
         return PredictionResponse(
             signal="HOLD",
             confidence=0.0,
@@ -519,7 +551,6 @@ async def get_latest_prediction(token: str):
 
 @app.get("/sentiment/status")
 async def get_sentiment_system_status():
-    """Get status of sentiment analysis system"""
     try:
         system_status = get_sentiment_status()
         token_status = {}
@@ -543,7 +574,6 @@ async def get_sentiment_system_status():
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket endpoint for real-time updates"""
     await manager.connect(websocket)
     try:
         while True:
@@ -553,7 +583,6 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @app.get("/health")
 async def health_check():
-    """Enhanced health check endpoint"""
     try:
         sentiment_status = get_sentiment_status()
         model_status = model_manager.get_status()
@@ -561,7 +590,7 @@ async def health_check():
         return {
             "status": "healthy" if model_status["available"] else "degraded",
             "timestamp": datetime.now().isoformat(),
-            "data_source": "Bybit API",
+            "data_source": "Aligned with data_fetch.py (CoinGecko + Binance/Bybit)",
             "prediction_service": model_status,
             "active_connections": len(manager.active_connections),
             "cached_tokens": list(market_data_cache.keys()),

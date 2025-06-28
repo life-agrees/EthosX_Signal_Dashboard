@@ -18,23 +18,35 @@ def load_model(model_path=MODEL_PATH):
 def make_prediction(model, token: str, features: dict):
     """
     Prepare input DataFrame and return (label, confidence).
-    - model: trained sklearn/XGB model
-    - token: one of 'BTC','SOL','DOGE','FART'
-    - features: dict with keys matching your feature columns
+    Ensures feature order matches the trained model.
     """
-    # Build DataFrame: ensure correct feature order
-    df = pd.DataFrame([features])
+    # Ensure feature order matches the model's expected input
+    if hasattr(model, 'feature_names_in_'):
+        ordered_keys = list(model.feature_names_in_)
+    else:
+        # Fallback: manually define the order
+        ordered_keys = [
+            "close_return", "volume_change", "sentiment",
+            "funding_rate", "open_interest", "return_15m", "volume_15m",
+            "rsi_14", "macd_diff"
+        ]
+
+    # Reorder the features accordingly
+    ordered_features = {k: features[k] for k in ordered_keys if k in features}
+    df = pd.DataFrame([ordered_features])
+
+    # Predict
     pred = model.predict(df)[0]
     proba = model.predict_proba(df)[0]
-    # Map class index back to original labels: if model uses 0,1,2 for -1,0,1
-    if hasattr(model, 'classes_') and set(model.classes_) == {0,1,2}:
+
+    # Decode label if needed
+    if hasattr(model, 'classes_') and set(model.classes_) == {0, 1, 2}:
         label_map = {0: -1, 1: 0, 2: 1}
         pred = label_map.get(pred, pred)
-        # confidence of predicted class
-        confidence = proba.max()
-    else:
-        confidence = proba.max()
+
+    confidence = proba.max()
     return pred, confidence
+
 
 
 if __name__ == '__main__':

@@ -11,12 +11,14 @@ const EthosXDashboard = () => {
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
   const [theme, setTheme] = useState('dark');
   const [supportedTokens, setSupportedTokens] = useState(['BTC', 'SOL', 'DOGE', 'FART']);
+  const [isGeneratingPrediction, setIsGeneratingPrediction] = useState(false);
   
-  // API Configuration
-  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "https://ethosx-bybit-proxy.ethosx-bybit.workers.dev";
+  // API Configuration - ALIGNED with your FastAPI server
+  const API_BASE_URL = import.meta?.env?.VITE_API_BASE_URL || "http://localhost:8000";
+  const WS_URL = import.meta?.env?.VITE_WS_URL || "ws://localhost:8000/ws";
   const [ws, setWs] = useState(null);
   
-  // Real-time data state (now from API)
+  // Real-time data state (from your API server)
   const [marketData, setMarketData] = useState({});
   const [technicalData, setTechnicalData] = useState({});
   const [prediction, setPrediction] = useState(null);
@@ -25,11 +27,12 @@ const EthosXDashboard = () => {
   const [isAutoRefresh, setIsAutoRefresh] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [apiHealth, setApiHealth] = useState(null);
   
   // Price history for charts
   const [priceHistory, setPriceHistory] = useState([]);
   
-  // API Helper functions
+  // API Helper functions - ALIGNED with your FastAPI error handling
   const apiCall = async (endpoint, options = {}) => {
     try {
       const response = await fetch(`${API_BASE_URL}${endpoint}`, {
@@ -41,7 +44,8 @@ const EthosXDashboard = () => {
       });
       
       if (!response.ok) {
-        throw new Error(`API Error: ${response.status} ${response.statusText}`);
+        const errorText = await response.text();
+        throw new Error(`API Error: ${response.status} ${response.statusText} - ${errorText}`);
       }
       
       return await response.json();
@@ -51,11 +55,35 @@ const EthosXDashboard = () => {
     }
   };
 
-  // Initialize supported tokens
+  // Health check to verify API server alignment
+  const checkApiHealth = useCallback(async () => {
+    try {
+      const health = await apiCall('/health');
+      setApiHealth(health);
+      console.log('API Health:', health);
+      
+      // Check if API is aligned with data_fetch.py
+      if (health.data_source && health.data_source.includes('data_fetch.py')) {
+        console.log('✅ API server is aligned with data_fetch.py');
+      }
+      
+      setError(null);
+      return true;
+    } catch (error) {
+      console.error('API health check failed:', error);
+      setError('API server unavailable');
+      setApiHealth(null);
+      return false;
+    }
+  }, []);
+
+  // Initialize supported tokens from API
   const fetchSupportedTokens = useCallback(async () => {
     try {
       const data = await apiCall('/tokens');
       setSupportedTokens(data.tokens);
+      console.log('Supported tokens:', data.tokens);
+      
       if (data.tokens.length > 0 && !data.tokens.includes(selectedToken)) {
         setSelectedToken(data.tokens[0]);
       }
@@ -65,7 +93,7 @@ const EthosXDashboard = () => {
     }
   }, [selectedToken]);
 
-  // Fetch market data for all tokens
+  // Fetch market data using your API endpoints
   const fetchMarketData = useCallback(async () => {
     try {
       const marketPromises = supportedTokens.map(async (token) => {
@@ -88,6 +116,7 @@ const EthosXDashboard = () => {
             change: data.change_24h,
             volume: data.volume_24h,
             oi: data.open_interest,
+            funding_rate: data.funding_rate,
             timestamp: data.timestamp
           };
         }
@@ -102,7 +131,7 @@ const EthosXDashboard = () => {
     }
   }, [supportedTokens]);
 
-  // Fetch technical indicators for all tokens
+  // Fetch technical indicators using your API
   const fetchTechnicalData = useCallback(async () => {
     try {
       const technicalPromises = supportedTokens.map(async (token) => {
@@ -153,8 +182,7 @@ const EthosXDashboard = () => {
       
       const signalColorMap = {
         'BUY': 'text-green-400',
-        'SELL': 'text-red-400',
-        'HOLD': 'text-yellow-400'
+        'SELL': 'text-red-400'
       };
       
       const predictionData = {
@@ -168,10 +196,14 @@ const EthosXDashboard = () => {
     }
   }, [selectedToken]);
 
-  // Make new prediction
+  // Make new prediction using your API
+  // Prevent multiple calls while generating
   const makePrediction = useCallback(async () => {
-    try {
-      setLoading(true);
+  if (isGeneratingPrediction) return; // Prevent multiple calls
+  
+  try {
+    setIsGeneratingPrediction(true);
+    setLoading(true);
       const data = await apiCall('/predict', {
         method: 'POST',
         body: JSON.stringify({
@@ -181,8 +213,7 @@ const EthosXDashboard = () => {
       
       const signalColorMap = {
         'BUY': 'text-green-400',
-        'SELL': 'text-red-400',
-        'HOLD': 'text-yellow-400'
+        'SELL': 'text-red-400'
       };
       
       const predictionData = {
@@ -221,8 +252,9 @@ const EthosXDashboard = () => {
         timestamp: new Date().toLocaleTimeString()
       }, ...prev.slice(0, 4)]);
     } finally {
-      setLoading(false);
-    }
+  setLoading(false);
+  setIsGeneratingPrediction(false);
+}
   }, [selectedToken]);
 
   // Subscribe to email alerts
@@ -263,120 +295,136 @@ const EthosXDashboard = () => {
     }
   };
 
-// WebSocket connection for real-time updates (Bybit public kline stream)
-const connectWebSocket = useCallback(() => {
-  // clean up any existing socket
-  if (ws) {
+  // WebSocket connection to YOUR API server (not Bybit directly)
+  const connectWebSocket = useCallback(() => {
+  // Clean up any existing socket
+  if (ws && ws.readyState !== WebSocket.CLOSED) {
     ws.close();
   }
 
-  // Bybit public linear kline v5 stream
-  const BYBIT_WS =
-    import.meta.env.VITE_WEBSOCKET_URL ||
-    "wss://stream.bybit.com/v5/public/linear";
-  console.log(`🔌 WebSocket connecting to: ${BYBIT_WS}`);
+  console.log(`🔌 WebSocket connecting to your API server: ${WS_URL}`);
 
-  const newWs = new WebSocket(BYBIT_WS);
-  let pingInterval;
+    const newWs = new WebSocket(WS_URL);
+    let pingInterval;
 
-  newWs.onopen = () => {
-    console.log("WebSocket connected");
-    setConnectionStatus("connected");
+    newWs.onopen = () => {
+      console.log("WebSocket connected to API server");
+      setConnectionStatus("connected");
+      
+      // Send subscription message if needed
+      newWs.send(JSON.stringify({
+        type: "subscribe",
+        tokens: supportedTokens
+      }));
 
-    // subscribe to 1m BTCUSDT candles
-    newWs.send(
-      JSON.stringify({
-        op: "subscribe",
-        args: ["kline.1.BTCUSDT"],
-      })
-    );
+      // Keep-alive ping every 30s
+      pingInterval = setInterval(() => {
+        if (newWs.readyState === WebSocket.OPEN) {
+          newWs.send(JSON.stringify({ type: "ping" }));
+        }
+      }, 30000);
+    };
 
-    // optional keep-alive ping every 30s
-    pingInterval = window.setInterval(() => {
-      newWs.send(JSON.stringify({ op: "ping" }));
-    }, 30_000);
-  };
+    newWs.onmessage = (evt) => {
+      try {
+        const msg = JSON.parse(evt.data);
+        console.log('WebSocket message:', msg);
 
-  newWs.onmessage = (evt) => {
-    try {
-      const msg = JSON.parse(evt.data);
+        // Handle different message types from your API server
+        switch (msg.type) {
+          case 'market_data':
+            setMarketData(prev => ({
+              ...prev,
+              [msg.token]: {
+                price: msg.data.price,
+                change: msg.data.change_24h,
+                volume: msg.data.volume_24h,
+                oi: msg.data.open_interest,
+                funding_rate: msg.data.funding_rate,
+                timestamp: msg.data.timestamp
+              }
+            }));
+            
+            // Update price history
+            setPriceHistory(prev => [
+              ...prev.slice(-29),
+              {
+                time: new Date().toLocaleTimeString(),
+                price: msg.data.price,
+                volume: msg.data.volume_24h
+              }
+            ]);
+            break;
 
-      // only handle kline updates for our symbol
-      if (
-        msg.topic === "kline.1.BTCUSDT" &&
-        Array.isArray(msg.data) &&
-        msg.data.length
-      ) {
-        const [candle] = msg.data;
-        const [
-          startMs,
-          open,
-          high,
-          low,
-          close,
-          volume,
-        ] = candle;
+          case 'prediction':
+            const signalColorMap = {
+              'BUY': 'text-green-400',
+              'SELL': 'text-red-400',
+            };
+            
+            if (msg.token === selectedToken) {
+              setPrediction({
+                ...msg.data,
+                signalColor: signalColorMap[msg.data.signal] || 'text-gray-400'
+              });
+            }
+            break;
 
-        const timestamp = new Date(Number(startMs)).toISOString();
-        const closeF = parseFloat(close);
-        const prev = marketData.BTC;
+          case 'alert':
+            setAlerts(prev => [{
+              id: Date.now(),
+              message: msg.message,
+              type: msg.alert_type || 'info',
+              timestamp: new Date().toLocaleTimeString()
+            }, ...prev.slice(0, 4)]);
+            break;
 
-        // update marketData for BTC
-        setMarketData((md) => ({
-          ...md,
-          BTC: {
-            price: closeF,
-            change:
-              prev?.price != null
-                ? ((closeF - prev.price) / prev.price) * 100
-                : 0,
-            volume: parseFloat(volume),
-            oi: prev?.oi ?? 0,
-            timestamp,
-          },
-        }));
-
-        // append to priceHistory
-        setPriceHistory((hist) => [
-          ...hist.slice(-29),
-          {
-            time: new Date(Number(startMs)).toLocaleTimeString(),
-            price: closeF,
-            volume: parseFloat(volume),
-          },
-        ]);
+          default:
+            console.log('Unknown message type:', msg.type);
+        }
+      } catch (err) {
+        console.error("WebSocket message parsing error:", err);
       }
-    } catch (err) {
-      console.error("WebSocket message parsing error:", err);
-    }
-  };
+    };
 
-  newWs.onclose = () => {
-    console.warn("WebSocket disconnected");
-    clearInterval(pingInterval);
-    setConnectionStatus("disconnected");
-    // try reconnecting
+    newWs.onclose = () => {
+  console.warn("WebSocket disconnected from API server");
+  clearInterval(pingInterval);
+  setConnectionStatus("disconnected");
+  
+  // Reconnect after 5 seconds if auto-refresh is enabled
+  if (isAutoRefresh && connectionStatus !== 'connecting') {
     setTimeout(() => {
-      if (isAutoRefresh) connectWebSocket();
-    }, 5_000);
-  };
+      if (isAutoRefresh) { // Double-check before reconnecting
+        connectWebSocket();
+      }
+    }, 5000);
+  }
+};
 
-  newWs.onerror = (err) => {
-    console.error("WebSocket error:", err);
-    newWs.close();
-  };
+    newWs.onerror = (err) => {
+      console.error("WebSocket error:", err);
+      newWs.close();
+    };
 
-  setWs(newWs);
-}, [ws, isAutoRefresh, marketData]);
-
+    setWs(newWs);
+  }, [ws, isAutoRefresh, supportedTokens, selectedToken, WS_URL]);
 
   // Initialize data on component mount
   useEffect(() => {
     const initializeData = async () => {
       setLoading(true);
       try {
+        // Check API health first
+        const isHealthy = await checkApiHealth();
+        if (!isHealthy) {
+          setError('API server is not responding');
+          return;
+        }
+
         await fetchSupportedTokens();
         await fetchSubscriberCount();
+        
         // Connect WebSocket for real-time updates
         if (isAutoRefresh) {
           connectWebSocket();
@@ -393,11 +441,11 @@ const connectWebSocket = useCallback(() => {
 
   // Fetch data when tokens are loaded
   useEffect(() => {
-    if (supportedTokens.length > 0) {
-      fetchMarketData();
-      fetchTechnicalData();
-    }
-  }, [supportedTokens, fetchMarketData, fetchTechnicalData]);
+  if (supportedTokens.length > 0) {
+    fetchMarketData();
+    fetchTechnicalData();
+  }
+}, [supportedTokens]);
 
   // Fetch prediction when selected token changes
   useEffect(() => {
@@ -406,19 +454,23 @@ const connectWebSocket = useCallback(() => {
     }
   }, [selectedToken, fetchLatestPrediction]);
 
-  // Periodic data refresh (fallback when WebSocket is not available)
+  // Periodic health checks and data refresh
   useEffect(() => {
     if (!isAutoRefresh) return;
     
-    const interval = setInterval(() => {
+    const interval = setInterval(async () => {
+      // Check API health periodically
+      await checkApiHealth();
+      
+      // Refresh data if WebSocket is disconnected
       if (connectionStatus === 'disconnected') {
         fetchMarketData();
         fetchTechnicalData();
       }
-    }, 15000); // 15 seconds
+    }, 30000); // 30 seconds
     
     return () => clearInterval(interval);
-  }, [isAutoRefresh, connectionStatus, fetchMarketData, fetchTechnicalData]);
+  }, [isAutoRefresh, connectionStatus, fetchMarketData, fetchTechnicalData, checkApiHealth]);
 
   // Initialize price history when market data is available
   useEffect(() => {
@@ -460,6 +512,12 @@ const connectWebSocket = useCallback(() => {
           <RefreshCw className="w-8 h-8 animate-spin mx-auto mb-4" />
           <p>Loading dashboard...</p>
           {error && <p className="text-red-400 mt-2">{error}</p>}
+          {apiHealth && (
+            <div className="mt-4 text-sm text-gray-400">
+              <p>API Status: {apiHealth.status}</p>
+              <p>Data Source: {apiHealth.data_source}</p>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -474,7 +532,7 @@ const connectWebSocket = useCallback(() => {
             <div className="flex items-center space-x-2">
               <BarChart3 className="w-8 h-8 text-blue-500" />
               <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-500 to-purple-600 bg-clip-text text-transparent">
-                EthosX OPerps Dashboard
+                EthosX Dashboard
               </h1>
             </div>
             <div className="flex items-center space-x-2">
@@ -484,6 +542,11 @@ const connectWebSocket = useCallback(() => {
                 <><WifiOff className="w-4 h-4 text-red-400" /><span className="text-sm text-red-400">Disconnected</span></>
               )}
             </div>
+            {apiHealth && (
+              <div className="text-xs text-gray-400">
+                API: {apiHealth.status} | Models: {apiHealth.prediction_service?.available ? 'Ready' : 'Unavailable'}
+              </div>
+            )}
           </div>
           <div className="flex items-center space-x-4">
             <button
@@ -535,11 +598,11 @@ const connectWebSocket = useCallback(() => {
             </div>
             <button
               onClick={makePrediction}
-              disabled={loading}
+              disabled={loading || isGeneratingPrediction || !apiHealth?.prediction_service?.available}
               className="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 disabled:opacity-50 text-white font-semibold py-3 px-4 rounded-lg transition-all transform hover:scale-105 disabled:hover:scale-100"
             >
               <Zap className="w-4 h-4 inline mr-2" />
-              {loading ? 'Generating...' : 'Generate Signal'}
+              {(loading || isGeneratingPrediction) ? 'Generating...' : 'Generate Signal'}
             </button>
           </div>
           
@@ -718,7 +781,7 @@ const connectWebSocket = useCallback(() => {
               </div>
               <div className="text-center">
                 <div className="text-lg font-semibold mb-1">AI Model</div>
-                <div className="text-sm text-gray-400">{prediction.timestamp}</div>
+                <div className="text-sm text-gray-400">{prediction.model}</div>
               </div>
             </div>
             
