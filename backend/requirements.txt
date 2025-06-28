@@ -21,4 +21,4 @@ Tweepy>=4.15.0
 # Machine learning
 
 scikit-learn>=1.2.0
-xgboost>=1.7.0
+xgboost==1.7.6 --only-binary=all
