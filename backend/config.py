@@ -12,10 +12,28 @@ from dotenv import load_dotenv
 # Ensure .env file is in the same directory as this script
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
+
+# API Base URLs
+COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
+BINANCE_BASE_URL = "https://fapi.binance.com/fapi/v1"
+BYBIT_BASE_URL = "https://api.bybit.com/v5"
+
+# Optional backup endpoints
+ALTERNATIVE_ENDPOINTS = {
+    "binance": [
+        "https://fapi.binance.com/fapi/v1",
+    ],
+    "bybit": [
+        "https://api.bybit.com/v5",
+        "https://api.bybit.com/v2/public",
+    ]
+}
+
+
 # API keys and secrets
-if not os.getenv("BYBIT_API_KEY") or not os.getenv("BYBIT_API_SECRET"):
-    logging.error("BYBIT_API_KEY and BYBIT_API_SECRET must be set in the .env file")
-    sys.exit(1)
+#if not os.getenv("BYBIT_API_KEY") or not os.getenv("BYBIT_API_SECRET"):
+#    logging.error("BYBIT_API_KEY and BYBIT_API_SECRET must be set in the .env file")
+#   sys.exit(1)
 #API_KEY    = os.getenv("BYBIT_API_KEY")
 #API_SECRET = os.getenv("BYBIT_API_SECRET")
 
