@@ -1,0 +1,41 @@
+# Ignore global environments
+.env
+.venv/
+venv/
+env/
+
+# IDE/editor settings
+.vscode/
+.idea/
+*.sw?
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Logs and dumps
+*.log
+*.sqlite3
+*.orig
+
+# Node/Python junk
+node_modules/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Test and coverage
+.pytest_cache/
+coverage/
+*.cover
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Frontend lockfiles
+*.lock
+npm-debug.log*
+yarn-debug.log*
