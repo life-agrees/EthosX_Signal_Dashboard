@@ -12,6 +12,8 @@ ta>=0.7.0
 pydantic==2.10.1
 email-validator==2.0.0
 aiohttp>=3.9.0
+vaderSentiment>=3.3.2
+dataclasses
 aiolimiter==1.1.0
 
 # Twitter API client

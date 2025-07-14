@@ -1,0 +1,378 @@
+/* Controls Component Styles */
+
+/* CSS Variables for theming */
+:root {
+  --controls-bg: #1f2937;
+  --controls-border: #374151;
+  --controls-text: #ffffff;
+  --controls-text-secondary: #9ca3af;
+  --controls-text-muted: #6b7280;
+  --controls-input-bg: #374151;
+  --controls-input-border: #4b5563;
+  --controls-input-focus: #3b82f6;
+  --controls-button-primary: #3b82f6;
+  --controls-button-primary-hover: #2563eb;
+  --controls-button-success: #10b981;
+  --controls-button-success-hover: #059669;
+  --controls-button-selected: #3b82f6;
+  --controls-button-selected-bg: rgba(59, 130, 246, 0.1);
+  --controls-button-default: #4b5563;
+  --controls-button-default-hover: #6b7280;
+  --controls-shadow: rgba(0, 0, 0, 0.1);
+  --controls-gradient: linear-gradient(135deg, #3b82f6, #8b5cf6);
+  --controls-gradient-hover: linear-gradient(135deg, #2563eb, #7c3aed);
+}
+
+/* Light theme variables */
+[data-theme="light"] {
+  --controls-bg: #ffffff;
+  --controls-border: #e5e7eb;
+  --controls-text: #111827;
+  --controls-text-secondary: #6b7280;
+  --controls-text-muted: #9ca3af;
+  --controls-input-bg: #f9fafb;
+  --controls-input-border: #d1d5db;
+  --controls-input-focus: #3b82f6;
+  --controls-button-primary: #3b82f6;
+  --controls-button-primary-hover: #2563eb;
+  --controls-button-success: #10b981;
+  --controls-button-success-hover: #059669;
+  --controls-button-selected: #3b82f6;
+  --controls-button-selected-bg: rgba(59, 130, 246, 0.1);
+  --controls-button-default: #e5e7eb;
+  --controls-button-default-hover: #d1d5db;
+  --controls-shadow: rgba(0, 0, 0, 0.1);
+  --controls-gradient: linear-gradient(135deg, #3b82f6, #8b5cf6);
+  --controls-gradient-hover: linear-gradient(135deg, #2563eb, #7c3aed);
+}
+
+/* Main controls container */
+.controls {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+@media (min-width: 1024px) {
+  .controls {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+/* Control panel base styles */
+.controls__panel {
+  background: var(--controls-bg);
+  border: 1px solid var(--controls-border);
+  border-radius: 0.75rem;
+  padding: 1.5rem;
+  box-shadow: 0 1px 3px var(--controls-shadow);
+  transition: all 0.2s ease;
+}
+
+.controls__panel:hover {
+  box-shadow: 0 4px 6px var(--controls-shadow);
+}
+
+/* Panel headers */
+.controls__panel-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 1rem;
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--controls-text);
+}
+
+.controls__panel-icon {
+  width: 1.25rem;
+  height: 1.25rem;
+  margin-right: 0.5rem;
+  color: var(--controls-text-secondary);
+}
+
+/* Token Selection Styles */
+/*.controls__token-selection {
+  /* Inherits from controls__panel 
+}*/
+
+.controls__token-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.controls__token-button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem;
+  border: 2px solid var(--controls-button-default);
+  border-radius: 0.5rem;
+  background: transparent;
+  color: var(--controls-text);
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  min-height: 3rem;
+}
+
+.controls__token-button:hover {
+  border-color: var(--controls-button-default-hover);
+  background: rgba(255, 255, 255, 0.05);
+  transform: translateY(-1px);
+}
+
+.controls__token-button:active {
+  transform: translateY(0);
+}
+
+.controls__token-button--selected {
+  border-color: var(--controls-button-selected);
+  background: var(--controls-button-selected-bg);
+  color: var(--controls-button-selected);
+}
+
+.controls__token-button--selected:hover {
+  border-color: var(--controls-button-primary-hover);
+}
+
+.controls__token-name {
+  font-size: 0.875rem;
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+
+.controls__token-change {
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.controls__token-change--positive {
+  color: #10b981;
+}
+
+.controls__token-change--negative {
+  color: #ef4444;
+}
+
+/* Generate Signal Button */
+.controls__generate-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 0.75rem 1rem;
+  background: var(--controls-gradient);
+  color: white;
+  font-weight: 600;
+  border: none;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 0.875rem;
+  min-height: 3rem;
+}
+
+.controls__generate-button:hover:not(:disabled) {
+  background: var(--controls-gradient-hover);
+  transform: scale(1.02);
+}
+
+.controls__generate-button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.controls__generate-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.controls__generate-button-icon {
+  width: 1rem;
+  height: 1rem;
+  margin-right: 0.5rem;
+}
+
+/* Subscription Styles */
+/*.controls__subscription {
+  /* Inherits from controls__panel 
+}*/
+
+.controls__subscription-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.controls__email-input {
+  width: 100%;
+  padding: 0.75rem;
+  background: var(--controls-input-bg);
+  border: 1px solid var(--controls-input-border);
+  border-radius: 0.5rem;
+  color: var(--controls-text);
+  font-size: 0.875rem;
+  transition: all 0.2s ease;
+}
+
+.controls__email-input:focus {
+  outline: none;
+  border-color: var(--controls-input-focus);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.controls__email-input::placeholder {
+  color: var(--controls-text-muted);
+}
+
+.controls__subscribe-button {
+  width: 100%;
+  padding: 0.75rem;
+  background: var(--controls-button-success);
+  color: white;
+  border: none;
+  border-radius: 0.5rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 0.875rem;
+}
+
+.controls__subscribe-button:hover {
+  background: var(--controls-button-success-hover);
+  transform: translateY(-1px);
+}
+
+.controls__subscribe-button:active {
+  transform: translateY(0);
+}
+
+/* Subscription Success State */
+.controls__subscription-success {
+  text-align: center;
+  padding: 1rem;
+}
+
+.controls__subscription-success-icon {
+  font-size: 2rem;
+  margin-bottom: 0.5rem;
+}
+
+.controls__subscription-success-text {
+  color: var(--controls-button-success);
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+
+.controls__subscription-success-subtext {
+  color: var(--controls-text-secondary);
+  font-size: 0.875rem;
+}
+
+/* Subscriber Count */
+.controls__subscriber-count {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--controls-border);
+  color: var(--controls-text-secondary);
+  font-size: 0.875rem;
+  text-align: center;
+}
+
+/* Loading states */
+.controls__loading {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.controls__loading-spinner {
+  display: inline-block;
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid transparent;
+  border-top: 2px solid currentColor;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-right: 0.5rem;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Responsive design */
+@media (max-width: 640px) {
+  .controls {
+    gap: 1rem;
+  }
+  
+  .controls__panel {
+    padding: 1rem;
+  }
+  
+  .controls__panel-header {
+    font-size: 1rem;
+  }
+  
+  .controls__token-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .controls__token-button {
+    min-height: 2.5rem;
+  }
+  
+  .controls__generate-button {
+    min-height: 2.5rem;
+  }
+}
+
+/* Focus styles for accessibility */
+.controls__token-button:focus,
+.controls__generate-button:focus,
+.controls__subscribe-button:focus,
+.controls__email-input:focus {
+  outline: 2px solid var(--controls-input-focus);
+  outline-offset: 2px;
+}
+
+/* Animation for panel entrance */
+.controls__panel {
+  animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+  .controls__token-button,
+  .controls__email-input {
+    border-width: 2px;
+  }
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  .controls__panel,
+  .controls__token-button,
+  .controls__generate-button,
+  .controls__subscribe-button,
+  .controls__email-input {
+    animation: none;
+    transition: none;
+  }
+}

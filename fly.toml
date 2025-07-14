@@ -1,0 +1,45 @@
+app = "ethosx-signals"
+primary_region = "sin"
+
+[build]
+
+[env]
+  PYTHONPATH = "/app"
+  PORT        = "8000"
+  SMTP_SERVER = "smtp.gmail.com"
+  SMTP_PORT   = "587"
+  MODEL_PATH  = "/app/backend/models/xgb_model.pkl"
+
+[[services]]
+  internal_port = 8000
+  protocol      = "tcp"
+  # Force HTTPS at the edge
+  force_https   = true
+  # Keep at least one machine always running
+  auto_stop_machines  = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  # Expose HTTP on port 80
+  [[services.ports]]
+    handlers = ["http"]
+    port     = 80
+
+  # Expose TLS (HTTPS) on port 443
+  [[services.ports]]
+    handlers = ["tls","http"]
+    port     = 443
+
+  # Health‑check on /health
+  [[services.http_checks]]
+    method       = "get"
+    path         = "/health"
+    interval     = "5s"
+    timeout      = "2s"
+    grace_period = "60s"
+
+
+[[vm]]
+  memory    = "1gb"
+  cpu_kind  = "shared"
+  cpus      = 1

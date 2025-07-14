@@ -21,17 +21,17 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Import your existing modules - ALIGNED WITH data_fetch.py
-from models.predict import load_model, make_prediction
-from sentiment import get_token_sentiment, get_multiple_sentiments, get_sentiment_status
-from alerts import add_subscriber, get_subscribers, maybe_alert, CONFIDENCE_THRESHOLD
+from .models.predict import load_model, make_prediction
+from .sentiment import get_token_sentiment, get_sentiment_status
+from .alerts import add_subscriber, get_subscribers, maybe_alert, CONFIDENCE_THRESHOLD
 # ALIGNED: Import actual functions from data_fetch.py
-from data_fetch import (
+from .data_fetch import (
     get_coingecko_spot_data, 
     fetch_derivatives_data,
     build_token_features,
     make_request_with_retry
 )
-from config import SUPPORTED_TOKENS, PERP_SYMBOLS, LABEL_HORIZON, COINGECKO_SYMBOLS
+from .config import SUPPORTED_TOKENS, PERP_SYMBOLS, LABEL_HORIZON, COINGECKO_SYMBOLS
 
 # Pydantic models remain the same...
 class PredictionRequest(BaseModel):  
@@ -348,15 +348,16 @@ async def generate_predictions():
                 if model_to_use is not None:
                     label, confidence = make_prediction(model_to_use, token, features)
                     
-                    signal_map = {0: "SELL", 1: "BUY"}
-                    signal = signal_map.get(label, "SELL")
+                    signal_map = {0: "Long PUT", 1: "Long CALL"}
+                    signal = signal_map.get(label, "Long PUT")
                     
                     prediction = {
                         'signal': signal,
-                        'confidence': confidence,
+                        'confidence': float(confidence),
                         'timestamp': datetime.now().isoformat(),
                         'token': token,
                         'features': features,
+                        'features': {k: float(v) for k, v in features.items()}  # Convert all numpy types
                         #'model': model_manager.primary_model_name if model_manager.primary_model else "None"
                     }
                     
@@ -409,9 +410,14 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://ethosx-signal-dashboard.fly.dev",  # Your frontend domain
+        "http://localhost:3000",  # For local development
+        "http://localhost:5173",  # For Vite dev server
+        "http://localhost:8080",  # Alternative local port
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -495,11 +501,11 @@ async def predict_signal(request: PredictionRequest):
         model_to_use, _ = model_manager.get_prediction_model()
         label, confidence = make_prediction(model_to_use, request.token, features)
         
-        signal_map = {0: "SELL", 1: "BUY"}
-        signal = signal_map.get(label, "SELL")
+        signal_map = {0: "Long PUT", 1: "Long CALL"}
+        signal = signal_map.get(label, "Long PUT")
         
         if confidence >= CONFIDENCE_THRESHOLD:
-            maybe_alert(confidence, request.token, signal)
+            await maybe_alert(confidence, request.token, signal)
         
         return PredictionResponse(
             signal=signal,
@@ -546,8 +552,16 @@ async def get_latest_prediction(token: str):
             token=token,
             features={}
         )
+    # Convert numpy types to Python types before returning
+    safe_pred = {
+        "signal": pred["signal"],
+        "confidence": float(pred["confidence"]),  # Convert numpy.float32 to float
+        "timestamp": pred["timestamp"],
+        "token": pred["token"],
+        "features": {k: float(v) for k, v in pred["features"].items()}  # Convert all feature values
+    }
 
-    return pred
+    return safe_pred
 
 @app.get("/sentiment/status")
 async def get_sentiment_system_status():
@@ -611,7 +625,7 @@ async def health_check():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
-        "api_server:app",
+        "backend.api_server:app",
         host="0.0.0.0",
         port=8000,
         reload=True,

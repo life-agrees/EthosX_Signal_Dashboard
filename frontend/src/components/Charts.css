@@ -1,0 +1,120 @@
+/* 6. components/charts.css */
+/* ======================== */
+.charts-container {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(600px, 1fr));
+  gap: 2rem;
+  margin-bottom: 2rem;
+}
+
+.chart-card {
+  padding: 1.5rem;
+  border-radius: 12px;
+  border: 1px solid var(--border-dark);
+  background: var(--bg-secondary-dark);
+  animation: fadeIn 0.8s ease-out;
+}
+
+.chart-card.light {
+  background: var(--bg-secondary-light);
+  border-color: var(--border-light);
+}
+
+.chart-title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  margin-bottom: 1rem;
+  color: var(--text-primary-dark);
+}
+
+.chart-wrapper {
+  position: relative;
+  height: 300px;
+  margin-bottom: 1rem;
+}
+
+.chart-loading {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--text-muted-dark);
+}
+
+.technical-indicators {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.indicator-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.indicator-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.indicator-label {
+  font-size: 0.875rem;
+  color: var(--text-secondary-dark);
+  font-weight: 500;
+}
+
+.indicator-value {
+  font-size: 0.875rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.indicator-value.positive {
+  color: var(--success-green);
+}
+
+.indicator-value.negative {
+  color: var(--danger-red);
+}
+
+.indicator-bar {
+  width: 100%;
+  height: 8px;
+  background: var(--bg-tertiary-dark);
+  border-radius: 4px;
+  overflow: hidden;
+  position: relative;
+}
+
+.indicator-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.6s ease, background-color 0.3s ease;
+  position: relative;
+}
+
+.indicator-fill::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+  animation: shimmer 2s infinite;
+}
+
+.indicator-fill.positive {
+  background: linear-gradient(135deg, var(--success-green), #34d399);
+}
+
+.indicator-fill.negative {
+  background: linear-gradient(135deg, var(--danger-red), #f87171);
+}
+
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}

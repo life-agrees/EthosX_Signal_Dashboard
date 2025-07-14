@@ -1,0 +1,128 @@
+/* 5. components/marketData.css */
+/* ============================= */
+.market-data-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.market-card {
+  padding: 1.5rem;
+  border-radius: 12px;
+  border: 1px solid var(--border-dark);
+  background: var(--bg-secondary-dark);
+  transition: var(--transition);
+  position: relative;
+  overflow: hidden;
+  animation: fadeIn 0.7s ease-out;
+}
+
+.market-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.market-card:hover::before {
+  opacity: 1;
+}
+
+.market-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.2);
+}
+
+.market-card.light {
+  background: var(--bg-secondary-light);
+  border-color: var(--border-light);
+}
+
+.market-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.market-card-title {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-muted-dark);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.market-card-icon {
+  width: 1.25rem;
+  height: 1.25rem;
+  color: var(--text-muted-dark);
+  opacity: 0.7;
+}
+
+.market-card-value {
+  font-size: 1.875rem;
+  font-weight: 700;
+  color: var(--text-primary-dark);
+  margin-bottom: 0.5rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.market-card-change {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.market-card-change.positive {
+  color: var(--success-green);
+}
+
+.market-card-change.negative {
+  color: var(--danger-red);
+}
+
+.market-card-change.neutral {
+  color: var(--text-muted-dark);
+}
+
+.market-card-subtitle {
+  color: var(--text-muted-dark);
+  font-size: 0.875rem;
+}
+
+.rsi-indicator {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 50%;
+  margin-left: 0.5rem;
+}
+
+.rsi-overbought {
+  background: var(--danger-red);
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
+}
+
+.rsi-oversold {
+  background: var(--success-green);
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.4);
+}
+
+.rsi-neutral {
+  background: var(--warning-yellow);
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.4);
+}
+
+/* Fade-in keyframe for cards */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}

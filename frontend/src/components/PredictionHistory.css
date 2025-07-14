@@ -1,0 +1,307 @@
+/* Prediction History Component Styles */
+
+/* Main container */
+.prediction-history {
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 0.75rem;
+  padding: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+/* Dark theme variables */
+:root {
+  --card-bg: #1f2937;
+  --border-color: #374151;
+  --text-primary: #ffffff;
+  --text-secondary: #9ca3af;
+  --text-muted: #6b7280;
+  --row-hover: #374151;
+  --row-border: #374151;
+}
+
+/* Light theme variables */
+[data-theme="light"] {
+  --card-bg: #ffffff;
+  --border-color: #e5e7eb;
+  --text-primary: #111827;
+  --text-secondary: #6b7280;
+  --text-muted: #9ca3af;
+  --row-hover: #f9fafb;
+  --row-border: #e5e7eb;
+}
+
+/* Header */
+.prediction-history__header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 1rem;
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.prediction-history__header-icon {
+  width: 1.25rem;
+  height: 1.25rem;
+  margin-right: 0.5rem;
+  color: var(--text-secondary);
+}
+
+/* Table container */
+.prediction-history__table-container {
+  overflow-x: auto;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border-color);
+}
+
+/* Table */
+.prediction-history__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+  background: var(--card-bg);
+}
+
+/* Table header */
+.prediction-history__table thead {
+  background: var(--row-border);
+}
+
+.prediction-history__table th {
+  text-align: left;
+  padding: 0.75rem 0.5rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--row-border);
+  white-space: nowrap;
+}
+
+/* Table body */
+.prediction-history__table tbody tr {
+  border-bottom: 1px solid var(--row-border);
+  transition: background-color 0.2s ease;
+}
+
+.prediction-history__table tbody tr:hover {
+  background: var(--row-hover);
+}
+
+.prediction-history__table tbody tr:last-child {
+  border-bottom: none;
+}
+
+.prediction-history__table td {
+  padding: 0.75rem 0.5rem;
+  color: var(--text-primary);
+  vertical-align: middle;
+}
+
+/* Time column */
+.prediction-history__time {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  white-space: nowrap;
+}
+
+/* Token column */
+.prediction-history__token {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* Signal column */
+.prediction-history__signal {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+}
+
+.prediction-history__signal--buy {
+  color: #10b981;
+}
+
+.prediction-history__signal--sell {
+  color: #ef4444;
+}
+
+.prediction-history__signal--hold {
+  color: #6b7280;
+}
+
+/* Confidence column */
+.prediction-history__confidence {
+  position: relative;
+}
+
+.prediction-history__confidence-text {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.prediction-history__confidence-bar {
+  width: 100%;
+  height: 0.25rem;
+  background: var(--row-border);
+  border-radius: 0.125rem;
+  margin-top: 0.25rem;
+  overflow: hidden;
+}
+
+.prediction-history__confidence-fill {
+  height: 100%;
+  background: linear-gradient(to right, #ef4444, #f59e0b, #10b981);
+  border-radius: 0.125rem;
+  transition: width 0.3s ease;
+}
+
+/* Model column */
+.prediction-history__model {
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+/* Empty state */
+.prediction-history__empty {
+  text-align: center;
+  padding: 3rem 1rem;
+  color: var(--text-muted);
+}
+
+.prediction-history__empty-icon {
+  width: 3rem;
+  height: 3rem;
+  margin: 0 auto 1rem;
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+
+.prediction-history__empty-text {
+  font-size: 1rem;
+  font-weight: 500;
+  margin-bottom: 0.5rem;
+}
+
+.prediction-history__empty-subtext {
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+  .prediction-history {
+    padding: 1rem;
+  }
+  
+  .prediction-history__table {
+    font-size: 0.8125rem;
+  }
+  
+  .prediction-history__table th,
+  .prediction-history__table td {
+    padding: 0.5rem 0.25rem;
+  }
+  
+  .prediction-history__header {
+    font-size: 1rem;
+  }
+  
+  /* Stack table on mobile */
+  .prediction-history__table-container {
+    border: none;
+  }
+  
+  .prediction-history__table,
+  .prediction-history__table thead,
+  .prediction-history__table tbody,
+  .prediction-history__table th,
+  .prediction-history__table td,
+  .prediction-history__table tr {
+    display: block;
+  }
+  
+  .prediction-history__table thead tr {
+    position: absolute;
+    top: -9999px;
+    left: -9999px;
+  }
+  
+  .prediction-history__table tbody tr {
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    margin-bottom: 0.75rem;
+    padding: 0.75rem;
+    background: var(--card-bg);
+  }
+  
+  .prediction-history__table td {
+    border: none;
+    padding: 0.25rem 0;
+    text-align: left;
+    position: relative;
+    padding-left: 30%;
+  }
+  
+  .prediction-history__table td::before {
+    content: attr(data-label);
+    position: absolute;
+    left: 0;
+    width: 25%;
+    padding-right: 0.5rem;
+    white-space: nowrap;
+    font-weight: 600;
+    color: var(--text-secondary);
+  }
+}
+
+/* Loading state */
+.prediction-history--loading {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.prediction-history__loading-skeleton {
+  background: linear-gradient(90deg, var(--row-border) 25%, transparent 50%, var(--row-border) 75%);
+  background-size: 200% 100%;
+  animation: loading 1.5s infinite;
+}
+
+@keyframes loading {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* Transitions */
+.prediction-history__table tbody tr,
+.prediction-history__confidence-fill {
+  transition: all 0.2s ease;
+}
+
+/* Focus styles for accessibility */
+.prediction-history__table:focus-within {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+}
+
+/* Print styles */
+@media print {
+  .prediction-history {
+    background: white;
+    color: black;
+    border: 1px solid #000;
+  }
+  
+  .prediction-history__table {
+    border-collapse: collapse;
+  }
+  
+  .prediction-history__table th,
+  .prediction-history__table td {
+    border: 1px solid #000;
+  }
+}

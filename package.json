@@ -1,7 +1,10 @@
 {
   "dependencies": {
+    "autoprefixer": "^10.4.21",
     "axios": "^1.9.0",
     "lucide-react": "^0.514.0",
-    "recharts": "^2.15.3"
+    "postcss": "^8.5.6",
+    "recharts": "^2.15.3",
+    "tailwindcss": "^4.1.11"
   }
 }

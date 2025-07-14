@@ -1,6 +1,62 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area, BarChart, Bar } from 'recharts';
 import { TrendingUp, TrendingDown, Minus, AlertCircle, Users, Zap, Activity, DollarSign, BarChart3, Bell, BellOff, Wifi, WifiOff, RefreshCw } from 'lucide-react';
+import { debounce } from 'lodash';
+import Header from "./components/Header"
+import MarketData from './components/MarketData';
+import Prediction from './components/Prediction';
+import Charts from './components/Charts';
+import Loading from './components/Loading';
+import Controls from './components/Controls';
+import PredictionHistory from './components/PredictionHistory';
+import Alerts from './components/Alerts';
+import Cards from './components/Cards';
+
+// Constants
+const WEBSOCKET_RECONNECT_DELAY = 5000;
+const HEALTH_CHECK_INTERVAL = 30000;
+const MAX_ALERTS = 5;
+const MAX_PREDICTION_HISTORY = 10;
+const PING_INTERVAL = 30000;
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Error Boundary Component
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error('Dashboard Error:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-gray-900 text-white">
+          <div className="text-center">
+            <AlertCircle className="mx-auto mb-4 h-12 w-12 text-red-400" />
+            <h2 className="text-xl font-semibold mb-2">Something went wrong</h2>
+            <p className="text-gray-400 mb-4">The dashboard encountered an error</p>
+            <button 
+              onClick={() => window.location.reload()}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
+            >
+              Reload Dashboard
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
 
 const EthosXDashboard = () => {
   // Core state
@@ -12,13 +68,36 @@ const EthosXDashboard = () => {
   const [theme, setTheme] = useState('dark');
   const [supportedTokens, setSupportedTokens] = useState(['BTC', 'SOL', 'DOGE', 'FART']);
   const [isGeneratingPrediction, setIsGeneratingPrediction] = useState(false);
+
+  // Environment detection
+  const isProduction = import.meta.env.PROD || window.location.hostname.includes('fly.dev');
+
+  // Debug logging
+  console.log('=== ENVIRONMENT DEBUG ===');
+  console.log('import.meta.env.MODE:', import.meta.env.MODE);
+  console.log('import.meta.env.PROD:', import.meta.env.PROD);
+  console.log('import.meta.env.DEV:', import.meta.env.DEV);
+  console.log('Raw VITE_API_BASE_URL:', import.meta.env.VITE_API_BASE_URL);
+  console.log('Raw VITE_WEBSOCKET_URL:', import.meta.env.VITE_WEBSOCKET_URL);
   
-  // API Configuration - ALIGNED with your FastAPI server
-  const API_BASE_URL = import.meta?.env?.VITE_API_BASE_URL || "http://localhost:8000";
-  const WS_URL = import.meta?.env?.VITE_WS_URL || "ws://localhost:8000/ws";
-  const [ws, setWs] = useState(null);
+  // API Configuration
+  const API_BASE_URL = isProduction 
+    ? 'https://ethosx-signals.fly.dev'
+    : (import.meta?.env?.VITE_API_BASE_URL || "http://localhost:8000");
+  const WS_URL = isProduction
+    ? 'wss://ethosx-signals.fly.dev/ws'
+    : (import.meta?.env?.VITE_WEBSOCKET_URL || "ws://localhost:8000/ws");
+
+  console.log('Final API_BASE_URL:', API_BASE_URL);
+  console.log('Final WS_URL:', WS_URL);
+  console.log('=== END DEBUG ===');
   
-  // Real-time data state (from your API server)
+  // WebSocket ref to avoid memory leaks
+  const wsRef = useRef(null);
+  const pingIntervalRef = useRef(null);
+  const abortControllerRef = useRef(null);
+  
+  // Real-time data state
   const [marketData, setMarketData] = useState({});
   const [technicalData, setTechnicalData] = useState({});
   const [prediction, setPrediction] = useState(null);
@@ -28,41 +107,189 @@ const EthosXDashboard = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [apiHealth, setApiHealth] = useState(null);
-  
-  // Price history for charts
   const [priceHistory, setPriceHistory] = useState([]);
   
-  // API Helper functions - ALIGNED with your FastAPI error handling
-  const apiCall = async (endpoint, options = {}) => {
-    try {
-      const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-        headers: {
-          'Content-Type': 'application/json',
-          ...options.headers,
-        },
-        ...options,
-      });
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`API Error: ${response.status} ${response.statusText} - ${errorText}`);
-      }
-      
-      return await response.json();
-    } catch (error) {
-      console.error(`API call failed for ${endpoint}:`, error);
-      throw error;
+  // Rate limiting state
+  const [apiCallCount, setApiCallCount] = useState(0);
+  const [lastApiCallTime, setLastApiCallTime] = useState(0);
+  
+  // Memoized theme classes
+  const themeClasses = useMemo(() => 
+    theme === 'dark' 
+      ? 'bg-gray-900 text-white' 
+      : 'bg-gray-50 text-gray-900',
+    [theme]
+  );
+  
+  const cardClasses = useMemo(() =>
+    theme === 'dark'
+      ? 'bg-gray-800 border-gray-700'
+      : 'bg-white border-gray-200',
+    [theme]
+  );
+
+  // Enhanced rate limiting with different strategies
+  const checkRateLimit = useCallback(() => {
+    const now = Date.now();
+    const timeSinceLastCall = now - lastApiCallTime;
+  
+    // Reset counter every minute
+    if (timeSinceLastCall > 60000) {
+      setApiCallCount(0);
     }
+  
+    // Check if we're exceeding the rate limit (30 action calls per minute)
+    if (apiCallCount >= 30) {
+      console.warn('⚠️ Rate limit exceeded for action endpoints');
+      return false;
+    }
+  
+    // Minimum 2 seconds between action calls
+    if (timeSinceLastCall < 2000) {
+      console.warn('⚠️ Too many requests - please wait');
+      return false;
+    }
+    
+    setApiCallCount(prev => prev + 1);
+    setLastApiCallTime(now);
+    return true;
+  }, [apiCallCount, lastApiCallTime]);
+
+  // Enhanced error handling with user-friendly messages
+  const getErrorMessage = (error, endpoint) => {
+    if (error.message.includes('Rate limit exceeded')) {
+      return 'Too many requests. Please wait a moment before trying again.';
+    }
+    
+    if (error.message.includes('API Error: 429')) {
+      return 'Server is busy. Please try again in a few seconds.';
+    }
+    
+    if (error.message.includes('API Error: 500')) {
+      return 'Server error. Our team has been notified.';
+    }
+    
+    if (error.message.includes('Failed to fetch')) {
+      return 'Network error. Please check your connection.';
+    }
+    
+    if (endpoint.includes('/predict')) {
+      return 'Prediction service is temporarily unavailable.';
+    }
+    
+    if (endpoint.includes('/subscribe')) {
+      return 'Subscription service is temporarily unavailable.';
+    }
+    
+    return 'Something went wrong. Please try again.';
   };
 
-  // Health check to verify API server alignment
+
+  const apiCall = useCallback(async (endpoint, options = {}) => {
+    // Define endpoint categories for different rate limiting strategies
+    const endpointCategories = {
+      // No rate limiting for essential data endpoints
+      essential: ['/health', '/tokens', '/market/', '/technical/', '/subscribers'],
+      // Light rate limiting for user queries
+      user: ['/predictions/'],
+      // Strict rate limiting for user actions
+      actions: ['/predict', '/subscribe']
+  };
+
+  // Determine endpoint category
+  const getEndpointCategory = (endpoint) => {
+    if (endpointCategories.essential.some(prefix => endpoint === prefix || endpoint.startsWith(prefix))) {
+      return 'essential';
+    }
+    if (endpointCategories.user.some(prefix => endpoint === prefix || endpoint.startsWith(prefix))) {
+      return 'user';
+    }
+    if (endpointCategories.actions.some(prefix => endpoint === prefix || endpoint.startsWith(prefix))) {
+      return 'actions';
+    }
+    return 'unknown';
+  };
+
+  const category = getEndpointCategory(endpoint);
+  
+  // Apply rate limiting based on category
+  if (category === 'actions' && !checkRateLimit()) {
+    throw new Error('Rate limit exceeded. Please wait before making more requests.');
+  }
+  
+  // Optional: Add lighter rate limiting for user endpoints
+  if (category === 'user') {
+    const now = Date.now();
+    const timeSinceLastCall = now - lastApiCallTime;
+    
+    // Minimum 500ms between user query calls
+    if (timeSinceLastCall < 500) {
+      await new Promise(resolve => setTimeout(resolve, 500 - timeSinceLastCall));
+    }
+  }
+
+  // Create abort controller for this request
+  const controller = new AbortController();
+  abortControllerRef.current = controller;
+
+  // Add timeout for requests
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, 30000); // 30 second timeout
+
+  try {
+    console.log(`📡 API Call: ${endpoint} (Category: ${category})`);
+    
+    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        ...options.headers,
+      },
+      ...options,
+    });
+    
+    clearTimeout(timeoutId);
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`API Error: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+    
+    const data = await response.json();
+    console.log(`✅ API Success: ${endpoint}`);
+    return data;
+    
+  } catch (error) {
+    clearTimeout(timeoutId);
+    
+    if (error.name === 'AbortError') {
+      console.log(`⏹️ Request aborted: ${endpoint}`);
+      return null;
+    }
+    
+    console.error(`❌ API call failed for ${endpoint}:`, error);
+    
+    // Add retry logic for essential endpoints
+    if (category === 'essential' && !options._isRetry) {
+      console.log(`🔄 Retrying essential endpoint: ${endpoint}`);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      return apiCall(endpoint, { ...options, _isRetry: true });
+    }
+    
+    throw error;
+  }
+}, [API_BASE_URL, checkRateLimit, lastApiCallTime]);
+
+  // Health check with improved error handling
   const checkApiHealth = useCallback(async () => {
     try {
       const health = await apiCall('/health');
+      if (!health) return false; // Request was aborted
+      
       setApiHealth(health);
       console.log('API Health:', health);
       
-      // Check if API is aligned with data_fetch.py
       if (health.data_source && health.data_source.includes('data_fetch.py')) {
         console.log('✅ API server is aligned with data_fetch.py');
       }
@@ -75,12 +302,23 @@ const EthosXDashboard = () => {
       setApiHealth(null);
       return false;
     }
+  }, [apiCall]);
+
+  // Enhanced email validation
+  const validateEmail = useCallback((email) => {
+    if (!email || typeof email !== 'string') {
+      return false;
+    }
+    
+    return EMAIL_REGEX.test(email.trim());
   }, []);
 
-  // Initialize supported tokens from API
+  // Debounced fetch functions
   const fetchSupportedTokens = useCallback(async () => {
     try {
       const data = await apiCall('/tokens');
+      if (!data) return; // Request was aborted
+      
       setSupportedTokens(data.tokens);
       console.log('Supported tokens:', data.tokens);
       
@@ -91,45 +329,64 @@ const EthosXDashboard = () => {
       console.error('Failed to fetch supported tokens:', error);
       setError('Failed to load supported tokens');
     }
-  }, [selectedToken]);
-
-  // Fetch market data using your API endpoints
+  }, [apiCall, selectedToken]);
+  
+  // Usage example with better error handling
   const fetchMarketData = useCallback(async () => {
     try {
+      // Batch requests with proper error handling
       const marketPromises = supportedTokens.map(async (token) => {
         try {
           const data = await apiCall(`/market/${token}`);
-          return { token, data };
+          return { token, data, success: true };
         } catch (error) {
           console.warn(`Failed to fetch market data for ${token}:`, error);
-          return { token, data: null };
+          return { token, data: null, success: false, error: getErrorMessage(error, `/market/${token}`) };
         }
       });
-      
-      const results = await Promise.all(marketPromises);
+
+      const results = await Promise.allSettled(marketPromises);
       const newMarketData = {};
+      const errors = [];
       
-      results.forEach(({ token, data }) => {
-        if (data) {
-          newMarketData[token] = {
-            price: data.price,
-            change: data.change_24h,
-            volume: data.volume_24h,
-            oi: data.open_interest,
-            funding_rate: data.funding_rate,
-            timestamp: data.timestamp
-          };
+      results.forEach((result) => {
+        if (result.status === 'fulfilled') {
+          const { token, data, success, error } = result.value;
+          if (success && data) {
+            newMarketData[token] = {
+              price: data.price,
+              change: data.change_24h,
+              volume: data.volume_24h,
+              oi: data.open_interest,
+              funding_rate: data.funding_rate,
+              timestamp: data.timestamp
+            };
+          } else if (error) {
+            errors.push(`${token}: ${error}`);
+          }
         }
       });
-      
-      setMarketData(prev => ({ ...prev, ...newMarketData }));
-      setConnectionStatus('connected');
-      setError(null);
+      // Update state with successful data
+      if (Object.keys(newMarketData).length > 0) {
+        setMarketData(prev => ({ ...prev, ...newMarketData }));
+        setConnectionStatus('connected');
+        setError(null);
+      }
+      // Show errors if any
+      if (errors.length > 0) {
+        console.warn('Market data fetch errors:', errors);
+        // Only show error if no data was fetched at all
+        if (Object.keys(newMarketData).length === 0) {
+          setError('Failed to fetch market data');
+        }
+      }
+
     } catch (error) {
       console.error('Failed to fetch market data:', error);
       setConnectionStatus('disconnected');
+      setError(getErrorMessage(error, '/market/'));
     }
-  }, [supportedTokens]);
+  }, [supportedTokens, apiCall]);
 
   // Fetch technical indicators using your API
   const fetchTechnicalData = useCallback(async () => {
@@ -165,24 +422,37 @@ const EthosXDashboard = () => {
     }
   }, [supportedTokens]);
 
-  // Fetch subscriber count
+
+
+  // Debounced versions
+  const debouncedFetchMarketData = useMemo(
+    () => debounce(fetchMarketData, 1000),
+    [fetchMarketData]
+  );
+
+  const debouncedFetchTechnicalData = useMemo(
+    () => debounce(fetchTechnicalData, 1000),
+    [fetchTechnicalData]
+  );
+
   const fetchSubscriberCount = useCallback(async () => {
     try {
       const data = await apiCall('/subscribers');
+      if (!data) return; // Request was aborted
       setSubscriberCount(data.count);
     } catch (error) {
       console.error('Failed to fetch subscriber count:', error);
     }
-  }, []);
+  }, [apiCall]);
 
-  // Get latest prediction for selected token
   const fetchLatestPrediction = useCallback(async () => {
     try {
       const data = await apiCall(`/predictions/${selectedToken}`);
+      if (!data) return; // Request was aborted
       
       const signalColorMap = {
-        'BUY': 'text-green-400',
-        'SELL': 'text-red-400'
+        'Long CALL': 'text-green-400',
+        'Long PUT': 'text-red-400'
       };
       
       const predictionData = {
@@ -194,26 +464,26 @@ const EthosXDashboard = () => {
     } catch (error) {
       console.warn(`No prediction available for ${selectedToken}:`, error);
     }
-  }, [selectedToken]);
+  }, [selectedToken, apiCall]);
 
-  // Make new prediction using your API
-  // Prevent multiple calls while generating
+  // Enhanced prediction function with better error handling
   const makePrediction = useCallback(async () => {
-  if (isGeneratingPrediction) return; // Prevent multiple calls
-  
-  try {
-    setIsGeneratingPrediction(true);
-    setLoading(true);
+    if (isGeneratingPrediction) return;
+    
+    try {
+      setIsGeneratingPrediction(true);
+      setLoading(true);
+      
       const data = await apiCall('/predict', {
         method: 'POST',
-        body: JSON.stringify({
-          token: selectedToken
-        })
+        body: JSON.stringify({ token: selectedToken })
       });
       
+      if (!data) return; // Request was aborted
+      
       const signalColorMap = {
-        'BUY': 'text-green-400',
-        'SELL': 'text-red-400'
+        'Long CALL': 'text-green-400',
+        'Long PUT': 'text-red-400'
       };
       
       const predictionData = {
@@ -222,7 +492,7 @@ const EthosXDashboard = () => {
       };
       
       setPrediction(predictionData);
-      setPredictionHistory(prev => [...prev.slice(-9), predictionData]);
+      setPredictionHistory(prev => [...prev.slice(-(MAX_PREDICTION_HISTORY - 1)), predictionData]);
       
       // Add alert if high confidence
       if (data.confidence > 0.8) {
@@ -231,9 +501,9 @@ const EthosXDashboard = () => {
           message: `High confidence ${data.signal} signal for ${selectedToken}`,
           confidence: data.confidence,
           timestamp: new Date().toLocaleTimeString(),
-          type: data.signal === 'BUY' ? 'success' : data.signal === 'SELL' ? 'danger' : 'warning'
+          type: data.signal === 'Long CALL' ? 'success' : data.signal === 'Long PUT' ? 'danger' : 'warning'
         };
-        setAlerts(prev => [newAlert, ...prev.slice(0, 4)]);
+        setAlerts(prev => [newAlert, ...prev.slice(0, MAX_ALERTS - 1)]);
       }
       
       setAlerts(prev => [{
@@ -241,7 +511,7 @@ const EthosXDashboard = () => {
         message: `New ${data.signal} signal generated for ${selectedToken}`,
         type: 'info',
         timestamp: new Date().toLocaleTimeString()
-      }, ...prev.slice(0, 4)]);
+      }, ...prev.slice(0, MAX_ALERTS - 1)]);
       
     } catch (error) {
       console.error('Prediction failed:', error);
@@ -250,30 +520,32 @@ const EthosXDashboard = () => {
         message: 'Prediction failed - check model status',
         type: 'error',
         timestamp: new Date().toLocaleTimeString()
-      }, ...prev.slice(0, 4)]);
+      }, ...prev.slice(0, MAX_ALERTS - 1)]);
     } finally {
-  setLoading(false);
-  setIsGeneratingPrediction(false);
-}
-  }, [selectedToken]);
+      setLoading(false);
+      setIsGeneratingPrediction(false);
+    }
+  }, [selectedToken, isGeneratingPrediction, apiCall]);
 
-  // Subscribe to email alerts
-  const handleSubscribe = async () => {
-    if (!email.includes('@')) {
+  // Enhanced subscription with better validation
+  const handleSubscribe = useCallback(async () => {
+    if (!validateEmail(email)) {
       setAlerts(prev => [{
         id: Date.now(),
         message: 'Please enter a valid email address',
         type: 'error',
         timestamp: new Date().toLocaleTimeString()
-      }, ...prev.slice(0, 4)]);
+      }, ...prev.slice(0, MAX_ALERTS - 1)]);
       return;
     }
 
     try {
-      await apiCall('/subscribe', {
+      const data = await apiCall('/subscribe', {
         method: 'POST',
-        body: JSON.stringify({ email })
+        body: JSON.stringify({ email: email.trim() })
       });
+      
+      if (!data) return; // Request was aborted
       
       setIsSubscribed(true);
       setAlerts(prev => [{
@@ -281,9 +553,8 @@ const EthosXDashboard = () => {
         message: 'Successfully subscribed to alerts!',
         type: 'success',
         timestamp: new Date().toLocaleTimeString()
-      }, ...prev.slice(0, 4)]);
+      }, ...prev.slice(0, MAX_ALERTS - 1)]);
       
-      // Refresh subscriber count
       fetchSubscriberCount();
     } catch (error) {
       setAlerts(prev => [{
@@ -291,131 +562,150 @@ const EthosXDashboard = () => {
         message: 'Subscription failed. Please try again.',
         type: 'error',
         timestamp: new Date().toLocaleTimeString()
-      }, ...prev.slice(0, 4)]);
+      }, ...prev.slice(0, MAX_ALERTS - 1)]);
     }
-  };
+  }, [email, validateEmail, apiCall, fetchSubscriberCount]);
 
-  // WebSocket connection to YOUR API server (not Bybit directly)
+  // Enhanced WebSocket connection with proper cleanup
   const connectWebSocket = useCallback(() => {
-  // Clean up any existing socket
-  if (ws && ws.readyState !== WebSocket.CLOSED) {
-    ws.close();
-  }
+    // Clean up existing connection
+    if (wsRef.current) {
+      if (wsRef.current.readyState !== WebSocket.CLOSED) {
+        wsRef.current.close();
+      }
+      wsRef.current = null;
+    }
 
-  console.log(`🔌 WebSocket connecting to your API server: ${WS_URL}`);
+    // Clear existing ping interval
+    if (pingIntervalRef.current) {
+      clearInterval(pingIntervalRef.current);
+      pingIntervalRef.current = null;
+    }
 
-    const newWs = new WebSocket(WS_URL);
-    let pingInterval;
+    console.log(`🔌 WebSocket connecting to API server: ${WS_URL}`);
 
-    newWs.onopen = () => {
-      console.log("WebSocket connected to API server");
-      setConnectionStatus("connected");
-      
-      // Send subscription message if needed
-      newWs.send(JSON.stringify({
-        type: "subscribe",
-        tokens: supportedTokens
-      }));
+    try {
+      const newWs = new WebSocket(WS_URL);
 
-      // Keep-alive ping every 30s
-      pingInterval = setInterval(() => {
-        if (newWs.readyState === WebSocket.OPEN) {
-          newWs.send(JSON.stringify({ type: "ping" }));
+      newWs.onopen = () => {
+        console.log("WebSocket connected to API server");
+        setConnectionStatus("connected");
+        
+        // Send subscription message
+        newWs.send(JSON.stringify({
+          type: "subscribe",
+          tokens: supportedTokens
+        }));
+
+        // Keep-alive ping
+        pingIntervalRef.current = setInterval(() => {
+          if (newWs.readyState === WebSocket.OPEN) {
+            newWs.send(JSON.stringify({ type: "ping" }));
+          }
+        }, PING_INTERVAL);
+      };
+
+      newWs.onmessage = (evt) => {
+        try {
+          const msg = JSON.parse(evt.data);
+          console.log('WebSocket message:', msg);
+
+          switch (msg.type) {
+            case 'market_data':
+              setMarketData(prev => ({
+                ...prev,
+                [msg.token]: {
+                  price: msg.data.price,
+                  change: msg.data.change_24h,
+                  volume: msg.data.volume_24h,
+                  oi: msg.data.open_interest,
+                  funding_rate: msg.data.funding_rate,
+                  timestamp: msg.data.timestamp
+                }
+              }));
+              
+              setPriceHistory(prev => [
+                ...prev.slice(-29),
+                {
+                  time: new Date().toLocaleTimeString(),
+                  price: msg.data.price,
+                  volume: msg.data.volume_24h
+                }
+              ]);
+              break;
+
+            case 'prediction':
+              const signalColorMap = {
+                'Long CALL': 'text-green-400',
+                'Long PUT': 'text-red-400',
+              };
+              
+              if (msg.token === selectedToken) {
+                setPrediction({
+                  ...msg.data,
+                  signalColor: signalColorMap[msg.data.signal] || 'text-gray-400'
+                });
+              }
+              break;
+
+            case 'alert':
+              setAlerts(prev => [{
+                id: Date.now(),
+                message: msg.message,
+                type: msg.alert_type || 'info',
+                timestamp: new Date().toLocaleTimeString()
+              }, ...prev.slice(0, MAX_ALERTS - 1)]);
+              break;
+
+            case 'pong':
+              // Handle pong response
+              break;
+
+            default:
+              console.log('Unknown message type:', msg.type);
+          }
+        } catch (err) {
+          console.error("WebSocket message parsing error:", err);
         }
-      }, 30000);
-    };
+      };
 
-    newWs.onmessage = (evt) => {
-      try {
-        const msg = JSON.parse(evt.data);
-        console.log('WebSocket message:', msg);
-
-        // Handle different message types from your API server
-        switch (msg.type) {
-          case 'market_data':
-            setMarketData(prev => ({
-              ...prev,
-              [msg.token]: {
-                price: msg.data.price,
-                change: msg.data.change_24h,
-                volume: msg.data.volume_24h,
-                oi: msg.data.open_interest,
-                funding_rate: msg.data.funding_rate,
-                timestamp: msg.data.timestamp
-              }
-            }));
-            
-            // Update price history
-            setPriceHistory(prev => [
-              ...prev.slice(-29),
-              {
-                time: new Date().toLocaleTimeString(),
-                price: msg.data.price,
-                volume: msg.data.volume_24h
-              }
-            ]);
-            break;
-
-          case 'prediction':
-            const signalColorMap = {
-              'BUY': 'text-green-400',
-              'SELL': 'text-red-400',
-            };
-            
-            if (msg.token === selectedToken) {
-              setPrediction({
-                ...msg.data,
-                signalColor: signalColorMap[msg.data.signal] || 'text-gray-400'
-              });
+      newWs.onclose = (event) => {
+        console.warn("WebSocket disconnected:", event.code, event.reason);
+        setConnectionStatus("disconnected");
+        
+        // Clear ping interval
+        if (pingIntervalRef.current) {
+          clearInterval(pingIntervalRef.current);
+          pingIntervalRef.current = null;
+        }
+        
+        // Reconnect if auto-refresh is enabled and connection wasn't manually closed
+        if (isAutoRefresh && event.code !== 1000) {
+          setTimeout(() => {
+            if (isAutoRefresh) {
+              connectWebSocket();
             }
-            break;
-
-          case 'alert':
-            setAlerts(prev => [{
-              id: Date.now(),
-              message: msg.message,
-              type: msg.alert_type || 'info',
-              timestamp: new Date().toLocaleTimeString()
-            }, ...prev.slice(0, 4)]);
-            break;
-
-          default:
-            console.log('Unknown message type:', msg.type);
+          }, WEBSOCKET_RECONNECT_DELAY);
         }
-      } catch (err) {
-        console.error("WebSocket message parsing error:", err);
-      }
-    };
+      };
 
-    newWs.onclose = () => {
-  console.warn("WebSocket disconnected from API server");
-  clearInterval(pingInterval);
-  setConnectionStatus("disconnected");
-  
-  // Reconnect after 5 seconds if auto-refresh is enabled
-  if (isAutoRefresh && connectionStatus !== 'connecting') {
-    setTimeout(() => {
-      if (isAutoRefresh) { // Double-check before reconnecting
-        connectWebSocket();
-      }
-    }, 5000);
-  }
-};
+      newWs.onerror = (error) => {
+        console.error("WebSocket error:", error);
+        setConnectionStatus("error");
+      };
 
-    newWs.onerror = (err) => {
-      console.error("WebSocket error:", err);
-      newWs.close();
-    };
-
-    setWs(newWs);
-  }, [ws, isAutoRefresh, supportedTokens, selectedToken, WS_URL]);
+      wsRef.current = newWs;
+    } catch (error) {
+      console.error("Failed to create WebSocket:", error);
+      setConnectionStatus("error");
+    }
+  }, [WS_URL, isAutoRefresh, supportedTokens, selectedToken]);
 
   // Initialize data on component mount
   useEffect(() => {
     const initializeData = async () => {
       setLoading(true);
       try {
-        // Check API health first
         const isHealthy = await checkApiHealth();
         if (!isHealthy) {
           setError('API server is not responding');
@@ -425,11 +715,11 @@ const EthosXDashboard = () => {
         await fetchSupportedTokens();
         await fetchSubscriberCount();
         
-        // Connect WebSocket for real-time updates
         if (isAutoRefresh) {
           connectWebSocket();
         }
       } catch (error) {
+        console.error('Failed to initialize dashboard:', error);
         setError('Failed to initialize dashboard');
       } finally {
         setLoading(false);
@@ -437,15 +727,15 @@ const EthosXDashboard = () => {
     };
 
     initializeData();
-  }, []);
+  }, []); // Empty dependency array - only run on mount
 
   // Fetch data when tokens are loaded
   useEffect(() => {
-  if (supportedTokens.length > 0) {
-    fetchMarketData();
-    fetchTechnicalData();
-  }
-}, [supportedTokens]);
+    if (supportedTokens.length > 0) {
+      debouncedFetchMarketData();
+      debouncedFetchTechnicalData();
+    }
+  }, [supportedTokens, debouncedFetchMarketData, debouncedFetchTechnicalData]);
 
   // Fetch prediction when selected token changes
   useEffect(() => {
@@ -459,18 +749,16 @@ const EthosXDashboard = () => {
     if (!isAutoRefresh) return;
     
     const interval = setInterval(async () => {
-      // Check API health periodically
       await checkApiHealth();
       
-      // Refresh data if WebSocket is disconnected
       if (connectionStatus === 'disconnected') {
-        fetchMarketData();
-        fetchTechnicalData();
+        debouncedFetchMarketData();
+        debouncedFetchTechnicalData();
       }
-    }, 30000); // 30 seconds
+    }, HEALTH_CHECK_INTERVAL);
     
     return () => clearInterval(interval);
-  }, [isAutoRefresh, connectionStatus, fetchMarketData, fetchTechnicalData, checkApiHealth]);
+  }, [isAutoRefresh, connectionStatus, debouncedFetchMarketData, debouncedFetchTechnicalData, checkApiHealth]);
 
   // Initialize price history when market data is available
   useEffect(() => {
@@ -484,388 +772,103 @@ const EthosXDashboard = () => {
     }
   }, [selectedToken, marketData, priceHistory.length]);
 
-  // Cleanup WebSocket on unmount
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (ws) {
-        ws.close();
+      // Cleanup WebSocket
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+      
+      // Cleanup ping interval
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current);
+      }
+      
+      // Cleanup pending API calls
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
       }
     };
-  }, [ws]);
+  }, []); // Empty dependency array - only cleanup on unmount
 
   const currentData = marketData[selectedToken];
   const currentTech = technicalData[selectedToken];
-  
-  const themeClasses = theme === 'dark' 
-    ? 'bg-gray-900 text-white' 
-    : 'bg-gray-50 text-gray-900';
-  
-  const cardClasses = theme === 'dark'
-    ? 'bg-gray-800 border-gray-700'
-    : 'bg-white border-gray-200';
 
-  // Loading state
+  // Early return for loading state
   if (loading && Object.keys(marketData).length === 0) {
     return (
-      <div className={`min-h-screen ${themeClasses} flex items-center justify-center`}>
-        <div className="text-center">
-          <RefreshCw className="w-8 h-8 animate-spin mx-auto mb-4" />
-          <p>Loading dashboard...</p>
-          {error && <p className="text-red-400 mt-2">{error}</p>}
-          {apiHealth && (
-            <div className="mt-4 text-sm text-gray-400">
-              <p>API Status: {apiHealth.status}</p>
-              <p>Data Source: {apiHealth.data_source}</p>
-            </div>
-          )}
-        </div>
-      </div>
+      <Loading 
+        loading={loading}
+        error={error}
+        apiHealth={apiHealth}
+        theme={theme}
+      />
     );
   }
   
   return (
-    <div className={`min-h-screen ${themeClasses} transition-colors duration-300`}>
-      {/* Header */}
-      <div className={`${cardClasses} border-b px-6 py-4`}>
-        <div className="flex justify-between items-center">
-          <div className="flex items-center space-x-4">
-            <div className="flex items-center space-x-2">
-              <BarChart3 className="w-8 h-8 text-blue-500" />
-              <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-500 to-purple-600 bg-clip-text text-transparent">
-                EthosX Dashboard
-              </h1>
-            </div>
-            <div className="flex items-center space-x-2">
-              {connectionStatus === 'connected' ? (
-                <><Wifi className="w-4 h-4 text-green-400" /><span className="text-sm text-green-400">Live</span></>
-              ) : (
-                <><WifiOff className="w-4 h-4 text-red-400" /><span className="text-sm text-red-400">Disconnected</span></>
-              )}
-            </div>
-            {apiHealth && (
-              <div className="text-xs text-gray-400">
-                API: {apiHealth.status} | Models: {apiHealth.prediction_service?.available ? 'Ready' : 'Unavailable'}
-              </div>
-            )}
-          </div>
-          <div className="flex items-center space-x-4">
-            <button
-              onClick={() => {
-                setIsAutoRefresh(!isAutoRefresh);
-                if (!isAutoRefresh) {
-                  connectWebSocket();
-                } else if (ws) {
-                  ws.close();
-                }
-              }}
-              className={`p-2 rounded-lg ${isAutoRefresh ? 'bg-green-600' : 'bg-gray-600'} hover:opacity-80 transition-opacity`}
-            >
-              {isAutoRefresh ? <Bell className="w-4 h-4" /> : <BellOff className="w-4 h-4" />}
-            </button>
-            <button
-              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-              className="p-2 rounded-lg bg-gray-600 hover:bg-gray-500 transition-colors"
-            >
-              {theme === 'dark' ? '☀️' : '🌙'}
-            </button>
-          </div>
+    <ErrorBoundary>
+      <div className={`min-h-screen ${themeClasses} transition-colors duration-300`}>
+        <Header
+          connectionStatus={connectionStatus}
+          apiHealth={apiHealth}
+          isAutoRefresh={isAutoRefresh}
+          setIsAutoRefresh={setIsAutoRefresh}
+          connectWebSocket={connectWebSocket}
+          ws={wsRef.current}
+          theme={theme}
+          setTheme={setTheme}
+        />
+        
+        <div className="p-6 space-y-6">
+          <Controls 
+            selectedToken={selectedToken}
+            setSelectedToken={setSelectedToken}
+            supportedTokens={supportedTokens}
+            marketData={marketData}
+            makePrediction={makePrediction}
+            loading={loading}
+            isGeneratingPrediction={isGeneratingPrediction}
+            apiHealth={apiHealth}
+            isSubscribed={isSubscribed}
+            email={email}
+            setEmail={setEmail}
+            handleSubscribe={handleSubscribe}
+            subscriberCount={subscriberCount}
+            theme={theme}
+          />
+          
+          <MarketData 
+            currentData={currentData}
+            currentTech={currentTech}
+            selectedToken={selectedToken}
+            theme={theme}
+          />
+          
+          <Charts 
+            priceHistory={priceHistory}
+            currentTech={currentTech}
+            theme={theme}
+          />
+          
+          <Prediction 
+            prediction={prediction}
+            theme={theme}
+          />
+          
+          <Alerts 
+            alerts={alerts}
+            theme={theme}
+          />
+
+          <PredictionHistory 
+            predictionHistory={predictionHistory}
+            theme={theme}
+          />
         </div>
       </div>
-      
-      <div className="p-6 space-y-6">
-        {/* Controls */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Token Selection */}
-          <div className={`${cardClasses} border rounded-xl p-6`}>
-            <h3 className="text-lg font-semibold mb-4">Token Selection</h3>
-            <div className="grid grid-cols-2 gap-2 mb-4">
-              {supportedTokens.map(token => (
-                <button
-                  key={token}
-                  onClick={() => setSelectedToken(token)}
-                  className={`p-3 rounded-lg border-2 transition-all ${
-                    selectedToken === token
-                      ? 'border-blue-500 bg-blue-500/10'
-                      : 'border-gray-600 hover:border-gray-500'
-                  }`}
-                >
-                  <div className="text-sm font-medium">{token}</div>
-                  <div className={`text-xs ${marketData[token]?.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {marketData[token]?.change >= 0 ? '+' : ''}{marketData[token]?.change?.toFixed(2) || '0.00'}%
-                  </div>
-                </button>
-              ))}
-            </div>
-            <button
-              onClick={makePrediction}
-              disabled={loading || isGeneratingPrediction || !apiHealth?.prediction_service?.available}
-              className="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 disabled:opacity-50 text-white font-semibold py-3 px-4 rounded-lg transition-all transform hover:scale-105 disabled:hover:scale-100"
-            >
-              <Zap className="w-4 h-4 inline mr-2" />
-              {(loading || isGeneratingPrediction) ? 'Generating...' : 'Generate Signal'}
-            </button>
-          </div>
-          
-          {/* Subscription */}
-          <div className={`${cardClasses} border rounded-xl p-6`}>
-            <h3 className="text-lg font-semibold mb-4 flex items-center">
-              <Users className="w-5 h-5 mr-2" />
-              Alert Subscription
-            </h3>
-            {!isSubscribed ? (
-              <div className="space-y-3">
-                <input
-                  type="email"
-                  placeholder="Enter your email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full p-3 bg-gray-700 border border-gray-600 rounded-lg focus:border-blue-500 focus:outline-none"
-                />
-                <button
-                  onClick={handleSubscribe}
-                  className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-4 rounded-lg transition-colors"
-                >
-                  Subscribe
-                </button>
-              </div>
-            ) : (
-              <div className="text-center">
-                <div className="text-green-400 mb-2">✓ Subscribed</div>
-                <div className="text-sm text-gray-400">You'll receive high-confidence alerts</div>
-              </div>
-            )}
-            <div className="text-sm text-gray-400 mt-4">
-              {subscriberCount} active subscribers
-            </div>
-          </div>
-        </div>
-        
-        {/* Market Data Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          <div className={`${cardClasses} border rounded-xl p-6`}>
-            <div className="flex items-center justify-between mb-2">
-              <h4 className="text-sm font-medium text-gray-400">Price</h4>
-              <DollarSign className="w-4 h-4 text-gray-400" />
-            </div>
-            <div className="text-2xl font-bold">
-              ${currentData?.price ? currentData.price.toLocaleString(undefined, {
-                maximumFractionDigits: currentData.price < 1 ? 6 : 2
-              }) : 'Loading...'}
-            </div>
-            <div className={`text-sm flex items-center ${currentData?.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-              {currentData?.change >= 0 ? <TrendingUp className="w-4 h-4 mr-1" /> : <TrendingDown className="w-4 h-4 mr-1" />}
-              {currentData?.change >= 0 ? '+' : ''}{currentData?.change?.toFixed(2) || '0.00'}%
-            </div>
-          </div>
-          
-          <div className={`${cardClasses} border rounded-xl p-6`}>
-            <div className="flex items-center justify-between mb-2">
-              <h4 className="text-sm font-medium text-gray-400">24h Volume</h4>
-              <Activity className="w-4 h-4 text-gray-400" />
-            </div>
-            <div className="text-2xl font-bold">
-              ${currentData?.volume ? (currentData.volume / 1e9).toFixed(2) : '0.00'}B
-            </div>
-            <div className="text-sm text-gray-400">Trading volume</div>
-          </div>
-          
-          <div className={`${cardClasses} border rounded-xl p-6`}>
-            <div className="flex items-center justify-between mb-2">
-              <h4 className="text-sm font-medium text-gray-400">Open Interest</h4>
-              <BarChart3 className="w-4 h-4 text-gray-400" />
-            </div>
-            <div className="text-2xl font-bold">
-              ${currentData?.oi ? (currentData.oi / 1e6).toFixed(1) : '0.0'}M
-            </div>
-            <div className="text-sm text-gray-400">Contracts</div>
-          </div>
-          
-          <div className={`${cardClasses} border rounded-xl p-6`}>
-            <div className="flex items-center justify-between mb-2">
-              <h4 className="text-sm font-medium text-gray-400">RSI</h4>
-              <div className={`w-2 h-2 rounded-full ${
-                currentTech?.rsi > 70 ? 'bg-red-400' : 
-                currentTech?.rsi < 30 ? 'bg-green-400' : 'bg-yellow-400'
-              }`} />
-            </div>
-            <div className="text-2xl font-bold">{currentTech?.rsi?.toFixed(1) || 'N/A'}</div>
-            <div className="text-sm text-gray-400">
-              {currentTech?.rsi > 70 ? 'Overbought' : 
-               currentTech?.rsi < 30 ? 'Oversold' : 'Neutral'}
-            </div>
-          </div>
-        </div>
-        
-        {/* Main Charts */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className={`${cardClasses} border rounded-xl p-6`}>
-            <h3 className="text-lg font-semibold mb-4">Price Action</h3>
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={priceHistory}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                <XAxis dataKey="time" stroke="#9CA3AF" fontSize={12} />
-                <YAxis stroke="#9CA3AF" fontSize={12} />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: theme === 'dark' ? '#1F2937' : '#FFFFFF',
-                    border: '1px solid #374151',
-                    borderRadius: '8px'
-                  }}
-                />
-                <Line type="monotone" dataKey="price" stroke="#3B82F6" strokeWidth={2} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-          
-          <div className={`${cardClasses} border rounded-xl p-6`}>
-            <h3 className="text-lg font-semibold mb-4">Technical Indicators</h3>
-            <div className="space-y-4">
-              <div>
-                <div className="flex justify-between mb-2">
-                  <span className="text-sm">Sentiment</span>
-                  <span className={`text-sm ${currentTech?.sentiment > 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {currentTech?.sentiment?.toFixed(3) || 'N/A'}
-                  </span>
-                </div>
-                <div className="w-full bg-gray-700 rounded-full h-2">
-                  <div
-                    className={`h-2 rounded-full ${currentTech?.sentiment > 0 ? 'bg-green-400' : 'bg-red-400'}`}
-                    style={{ width: `${Math.abs(currentTech?.sentiment || 0) * 50 + 50}%` }}
-                  />
-                </div>
-              </div>
-              
-              <div>
-                <div className="flex justify-between mb-2">
-                  <span className="text-sm">MACD</span>
-                  <span className={`text-sm ${currentTech?.macd > 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {currentTech?.macd?.toFixed(4) || 'N/A'}
-                  </span>
-                </div>
-                <div className="w-full bg-gray-700 rounded-full h-2">
-                  <div
-                    className={`h-2 rounded-full ${currentTech?.macd > 0 ? 'bg-green-400' : 'bg-red-400'}`}
-                    style={{ width: `${Math.min(100, Math.abs(currentTech?.macd || 0) * 1000 + 50)}%` }}
-                  />
-                </div>
-              </div>
-              
-              <div>
-                <div className="flex justify-between mb-2">
-                  <span className="text-sm">Funding Rate</span>
-                  <span className={`text-sm ${currentTech?.funding > 0 ? 'text-red-400' : 'text-green-400'}`}>
-                    {((currentTech?.funding || 0) * 100).toFixed(4)}%
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-        
-        {/* Prediction Display */}
-        {prediction && (
-          <div className={`${cardClasses} border rounded-xl p-6`}>
-            <h3 className="text-lg font-semibold mb-4">Latest Prediction</h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="text-center">
-                <div className={`text-4xl font-bold ${prediction.signalColor} mb-2`}>
-                  {prediction.signal}
-                </div>
-                <div className="text-sm text-gray-400">Signal</div>
-              </div>
-              <div className="text-center">
-                <div className="text-4xl font-bold text-blue-400 mb-2">
-                  {(prediction.confidence * 100).toFixed(1)}%
-                </div>
-                <div className="text-sm text-gray-400">Confidence</div>
-              </div>
-              <div className="text-center">
-                <div className="text-lg font-semibold mb-1">AI Model</div>
-                <div className="text-sm text-gray-400">{prediction.model}</div>
-              </div>
-            </div>
-            
-            {/* Confidence meter */}
-            <div className="mt-6">
-              <div className="flex justify-between mb-2">
-                <span className="text-sm">Confidence Level</span>
-                <span className="text-sm">{(prediction.confidence * 100).toFixed(1)}%</span>
-              </div>
-              <div className="w-full bg-gray-700 rounded-full h-3">
-                <div
-                  className="h-3 rounded-full bg-gradient-to-r from-red-500 via-yellow-500 to-green-500"
-                  style={{ width: `${prediction.confidence * 100}%` }}
-                />
-              </div>
-            </div>
-          </div>
-        )}
-        
-        {/* Alerts */}
-        {alerts.length > 0 && (
-          <div className={`${cardClasses} border rounded-xl p-6`}>
-            <h3 className="text-lg font-semibold mb-4 flex items-center">
-              <AlertCircle className="w-5 h-5 mr-2" />
-              Recent Alerts
-            </h3>
-            <div className="space-y-3">
-              {alerts.map(alert => (
-                <div
-                  key={alert.id}
-                  className={`p-3 rounded-lg border-l-4 ${
-                    alert.type === 'success' ? 'bg-green-900/20 border-green-400' :
-                    alert.type === 'danger' ? 'bg-red-900/20 border-red-400' :
-                    alert.type === 'warning' ? 'bg-yellow-900/20 border-yellow-400' :
-                    'bg-gray-900/20 border-gray-400'
-                  }`}
-                >
-                  <div className="flex justify-between items-start">
-                    <div className="text-sm">{alert.message}</div>
-                    <div className="text-xs text-gray-400">{alert.timestamp}</div>
-                  </div>
-                  {alert.confidence && (
-                    <div className="text-xs text-gray-400 mt-1">
-                      Confidence: {(alert.confidence * 100).toFixed(1)}%
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-        
-        {/* Prediction History */}
-        {predictionHistory.length > 0 && (
-          <div className={`${cardClasses} border rounded-xl p-6`}>
-            <h3 className="text-lg font-semibold mb-4">Prediction History</h3>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-gray-700">
-                    <th className="text-left p-2">Time</th>
-                    <th className="text-left p-2">Token</th>
-                    <th className="text-left p-2">Signal</th>
-                    <th className="text-left p-2">Confidence</th>
-                    <th className="text-left p-2">Model</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {predictionHistory.slice(-10).reverse().map((pred, idx) => (
-                    <tr key={idx} className="border-b border-gray-800">
-                      <td className="p-2">{pred.timestamp}</td>
-                      <td className="p-2 font-medium">{pred.token}</td>
-                      <td className={`p-2 font-bold ${pred.signalColor}`}>{pred.signal}</td>
-                      <td className="p-2">{(pred.confidence * 100).toFixed(1)}%</td>
-                      <td className="p-2">{pred.model}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
+    </ErrorBoundary>
   );
 };
 

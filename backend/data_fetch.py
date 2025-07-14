@@ -1,4 +1,4 @@
-# data_fetch.py
+# data_fetch.py 
 
 import os
 from dotenv import load_dotenv
@@ -11,27 +11,31 @@ from aiolimiter import AsyncLimiter
 import asyncio
 import time
 import logging
-from typing import Optional, Dict, List
+from enum import Enum
+from dataclasses import dataclass
+from typing import Optional, Dict, List, Any
 import warnings
-import random
+import json
 from urllib.parse import urljoin
+import hashlib
+import random
 warnings.filterwarnings("ignore")
 
-from config import (
+from .config import (
     SUPPORTED_TOKENS,
     PERP_SYMBOLS,
     COINGECKO_SYMBOLS,
     LABEL_HORIZON,
     DATA_DIR,
 )
-from sentiment import get_token_sentiment
+from .sentiment import get_token_sentiment
 
 # API configurations
 COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
 BINANCE_BASE_URL = "https://fapi.binance.com/fapi/v1"
 BYBIT_BASE_URL = "https://api.bybit.com/v5"
 
-# Alternative endpoints for better reliability
+# Alternative endpoints for better reliability (from File 1)
 ALTERNATIVE_ENDPOINTS = {
     "binance": [
         "https://fapi.binance.com/fapi/v1",
@@ -43,7 +47,7 @@ ALTERNATIVE_ENDPOINTS = {
 }
 
 def choose_url(service: str, path: str) -> List[str]:
-    """Construct full URLs for a service’s path using its fallbacks."""
+    """Construct full URLs for a service's path using its fallbacks."""
     bases = ALTERNATIVE_ENDPOINTS.get(service, [])
     return [urljoin(base, path) for base in bases]
 
@@ -54,22 +58,282 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # Symbol mappings for different exchanges
-COINGECKO =COINGECKO_SYMBOLS 
-
+COINGECKO = COINGECKO_SYMBOLS 
 BINANCE_PERP_SYMBOLS = PERP_SYMBOLS
-
 BYBIT_PERP_SYMBOLS = PERP_SYMBOLS
 
-# Improved headers with rotation
+# User agents rotation (from File 1)
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
 ]
 
+# ===== ENHANCED RATE LIMITING IMPLEMENTATION =====
+
+class RateLimitTier(Enum):
+    FREE = "free"
+    PAID = "paid"
+    PREMIUM = "premium"
+
+@dataclass
+class RateLimitConfig:
+    requests_per_minute: int
+    burst_limit: int
+    backoff_multiplier: float
+    max_backoff: int
+    tier: RateLimitTier
+
+class AdaptiveRateLimiter:
+    """Enhanced rate limiter with dynamic adjustment and tier management"""
+    
+    def __init__(self):
+        self.configs = {
+            "coingecko": {
+                RateLimitTier.FREE: RateLimitConfig(30, 5, 1.5, 300, RateLimitTier.FREE),
+                RateLimitTier.PAID: RateLimitConfig(100, 20, 1.2, 120, RateLimitTier.PAID),
+            },
+            "binance": {
+                RateLimitTier.FREE: RateLimitConfig(1200, 50, 2.0, 300, RateLimitTier.FREE),
+                RateLimitTier.PAID: RateLimitConfig(2400, 100, 1.5, 180, RateLimitTier.PAID),
+            },
+            "bybit": {
+                RateLimitTier.FREE: RateLimitConfig(600, 30, 1.8, 240, RateLimitTier.FREE),
+                RateLimitTier.PAID: RateLimitConfig(1200, 60, 1.3, 120, RateLimitTier.PAID),
+            }
+        }
+        
+        self.current_tiers = {
+            "coingecko": RateLimitTier.FREE,
+            "binance": RateLimitTier.FREE,
+            "bybit": RateLimitTier.FREE,
+        }
+        
+        self.limiters = {}
+        self.rate_limit_history = {}
+        self.adaptive_delays = {}
+        self.last_request_time = {}
+        
+        self._initialize_limiters()
+    
+    def _initialize_limiters(self):
+        """Initialize rate limiters based on current tiers"""
+        for service, tier in self.current_tiers.items():
+            config = self.configs[service][tier]
+            self.limiters[service] = AsyncLimiter(
+                config.requests_per_minute, 
+                60
+            )
+            self.adaptive_delays[service] = 0
+            self.rate_limit_history[service] = []
+    
+    async def acquire(self, service: str, endpoint: str = "default") -> bool:
+        """Acquire rate limit token with adaptive delays"""
+        if service not in self.limiters:
+            logger.warning(f"No rate limiter configured for {service}")
+            return True
+        
+        # Apply adaptive delay if needed
+        if service in self.adaptive_delays and self.adaptive_delays[service] > 0:
+            logger.debug(f"Applying adaptive delay of {self.adaptive_delays[service]}s for {service}")
+            await asyncio.sleep(self.adaptive_delays[service])
+        
+        # Wait for rate limit token
+        await self.limiters[service].acquire()
+        
+        # Track request timing
+        self.last_request_time[service] = time.time()
+        
+        return True
+    
+    def record_rate_limit(self, service: str, retry_after: Optional[int] = None):
+        """Record a rate limit hit and adjust strategy"""
+        current_time = time.time()
+        
+        # Add to history
+        if service not in self.rate_limit_history:
+            self.rate_limit_history[service] = []
+        
+        self.rate_limit_history[service].append(current_time)
+        
+        # Clean old entries (keep last hour)
+        self.rate_limit_history[service] = [
+            t for t in self.rate_limit_history[service] 
+            if current_time - t < 3600
+        ]
+        
+        # Increase adaptive delay
+        config = self.configs[service][self.current_tiers[service]]
+        
+        if retry_after:
+            self.adaptive_delays[service] = min(retry_after, config.max_backoff)
+        else:
+            current_delay = self.adaptive_delays.get(service, 0)
+            new_delay = min(
+                max(1, current_delay * config.backoff_multiplier),
+                config.max_backoff
+            )
+            self.adaptive_delays[service] = new_delay
+        
+        logger.warning(f"Rate limit hit for {service}. New adaptive delay: {self.adaptive_delays[service]}s")
+        
+        # If too many rate limits, consider downgrading tier
+        recent_limits = len([
+            t for t in self.rate_limit_history[service]
+            if current_time - t < 600  # last 10 minutes
+        ])
+        
+        if recent_limits >= 3:
+            self._adjust_tier(service, more_conservative=True)
+    
+    def record_success(self, service: str):
+        """Record successful request and potentially reduce delays"""
+        current_time = time.time()
+        
+        # Gradually reduce adaptive delay on success
+        if service in self.adaptive_delays and self.adaptive_delays[service] > 0:
+            self.adaptive_delays[service] = max(0, self.adaptive_delays[service] * 0.9)
+        
+        # If we haven't hit rate limits recently, consider upgrading tier
+        if service in self.rate_limit_history:
+            recent_limits = len([
+                t for t in self.rate_limit_history[service]
+                if current_time - t < 1800  # last 30 minutes
+            ])
+            
+            if recent_limits == 0 and self.adaptive_delays[service] == 0:
+                self._adjust_tier(service, more_conservative=False)
+    
+    def _adjust_tier(self, service: str, more_conservative: bool):
+        """Adjust rate limiting tier based on performance"""
+        if service not in self.configs:
+            return
+        
+        available_tiers = list(self.configs[service].keys())
+        current_tier = self.current_tiers[service]
+        current_index = available_tiers.index(current_tier)
+        
+        if more_conservative and current_index > 0:
+            # Move to more conservative tier
+            new_tier = available_tiers[current_index - 1]
+            self.current_tiers[service] = new_tier
+            logger.info(f"Downgrading {service} rate limit tier to {new_tier.value}")
+            
+        elif not more_conservative and current_index < len(available_tiers) - 1:
+            # Move to more aggressive tier
+            new_tier = available_tiers[current_index + 1]
+            self.current_tiers[service] = new_tier
+            logger.info(f"Upgrading {service} rate limit tier to {new_tier.value}")
+        
+        # Reinitialize limiter with new tier
+        self._initialize_limiters()
+    
+    def get_stats(self) -> Dict[str, Dict]:
+        """Get current rate limiting statistics"""
+        stats = {}
+        current_time = time.time()
+        
+        for service in self.limiters:
+            recent_limits = len([
+                t for t in self.rate_limit_history.get(service, [])
+                if current_time - t < 3600
+            ])
+            
+            stats[service] = {
+                "tier": self.current_tiers[service].value,
+                "adaptive_delay": self.adaptive_delays.get(service, 0),
+                "rate_limits_last_hour": recent_limits,
+                "last_request": self.last_request_time.get(service, 0)
+            }
+        
+        return stats
+
+adaptive_rate_limiter = AdaptiveRateLimiter()
+
+
+# In-memory cache with TTL 
+class DataCache:
+    def __init__(self):
+        self.cache = {}
+        self.cache_times = {}
+        self.ttl = 300  # 5 minutes TTL
+    
+    def get_cache_key(self, url: str, params: dict = None) -> str:
+        """Generate cache key from URL and parameters"""
+        key_data = f"{url}_{params or {}}"
+        return hashlib.md5(key_data.encode()).hexdigest()
+    
+    def get(self, key: str) -> Optional[Any]:
+        """Get cached data if not expired"""
+        if key in self.cache:
+            if time.time() - self.cache_times[key] < self.ttl:
+                return self.cache[key]
+            else:
+                # Remove expired entry
+                del self.cache[key]
+                del self.cache_times[key]
+        return None
+    
+    def set(self, key: str, data: Any):
+        """Set cached data with timestamp"""
+        self.cache[key] = data
+        self.cache_times[key] = time.time()
+    
+    def clear_expired(self):
+        """Clear all expired entries"""
+        current_time = time.time()
+        expired_keys = [
+            key for key, cache_time in self.cache_times.items()
+            if current_time - cache_time >= self.ttl
+        ]
+        for key in expired_keys:
+            del self.cache[key]
+            del self.cache_times[key]
+
+# Global cache instance
+cache = DataCache()
+
+# Circuit breaker for API endpoints 
+class CircuitBreaker:
+    def __init__(self, failure_threshold=5, recovery_timeout=300):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.failure_count = {}
+        self.last_failure_time = {}
+        self.blocked_until = {}
+    
+    def is_blocked(self, service: str) -> bool:
+        """Check if service is currently blocked"""
+        if service in self.blocked_until:
+            if time.time() < self.blocked_until[service]:
+                return True
+            else:
+                # Recovery time passed, reset
+                del self.blocked_until[service]
+                self.failure_count[service] = 0
+        return False
+    
+    def record_failure(self, service: str):
+        """Record a failure for the service"""
+        self.failure_count[service] = self.failure_count.get(service, 0) + 1
+        self.last_failure_time[service] = time.time()
+        
+        if self.failure_count[service] >= self.failure_threshold:
+            self.blocked_until[service] = time.time() + self.recovery_timeout
+            logger.warning(f"🚨 Circuit breaker activated for {service} - blocked for {self.recovery_timeout}s")
+    
+    def record_success(self, service: str):
+        """Record a successful request"""
+        if service in self.failure_count:
+            self.failure_count[service] = 0
+
+# Global circuit breaker
+circuit_breaker = CircuitBreaker()
+
 def get_headers():
+    """Get headers with user agent rotation"""
     return {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "User-Agent": random.choice(USER_AGENTS),
         "Accept": "application/json",
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate, br",
@@ -81,71 +345,93 @@ def get_headers():
         "Sec-Fetch-Site": "cross-site",
     }
 
-#  Use a token-bucket limiter instead of manual sleeps
-#    Here we allow:   Coingecko → 5 calls/minute,  Binance → 20/min,  Bybit → 30/min
-LIMITERS = {
-    "coingecko": AsyncLimiter(5, 60),
-    "binance":  AsyncLimiter(20, 60),
-    "bybit":    AsyncLimiter(30, 60),
-}
-
 async def make_request_with_retry(url: str, params: dict = None, max_retries: int = 3, service: str = "default") -> Optional[dict]:
-    """Enhanced request function with aiohttp for better connection handling"""
+    """Enhanced request function with caching, circuit breaker, and retry logic - merged from both files"""
     
-    #  Wait for token from the bucket
-    limiter = LIMITERS.get(service)
-    if limiter:
-        await limiter.acquire()
+    # Check cache first 
+    cache_key = cache.get_cache_key(url, params)
+    cached_data = cache.get(cache_key)
+    if cached_data is not None:
+        logger.debug(f"Cache hit for {url}")
+        return cached_data
+    
+    # Check circuit breaker status
+    if circuit_breaker.is_blocked(service):
+        logger.warning(f"Circuit breaker active for {service}, skipping request to {url}")
+        return None
+    
 
-    
-    # Use aiohttp instead of httpx for better connection handling
-    timeout = aiohttp.ClientTimeout(total=30, connect=15)
+    await adaptive_rate_limiter.acquire(service)
+    # Enhanced timeout and connection settings
+    timeout = aiohttp.ClientTimeout(total=45, connect=20)
     
     for attempt in range(max_retries):
         try:
             async with aiohttp.ClientSession(
                 timeout=timeout, 
                 headers=get_headers(),
-                connector=aiohttp.TCPConnector(ssl=False)  # fallback  
+                connector=aiohttp.TCPConnector(ssl=False, limit=10, limit_per_host=5)
             ) as session:
                 async with session.get(url, params=params) as response:
                     
                     if response.status == 429:  # Rate limited
-                        wait_time = min(30 * (2 ** attempt), 120)
+                        # Extract retry-after header if available
+                        retry_after = response.headers.get('Retry-After')
+                        if retry_after:
+                            try:
+                                retry_after = int(retry_after)
+                            except ValueError:
+                                retry_after = None
+
+                        # Record rate limit hit
+                        adaptive_rate_limiter.record_rate_limit(service, retry_after)
+
+                        wait_time = min(60 * (2 ** attempt), 240)  # Conservative backoff
                         logger.warning(f"Rate limited on {url}. Waiting {wait_time}s (attempt {attempt + 1}/{max_retries})")
+                        circuit_breaker.record_failure(service)
                         await asyncio.sleep(wait_time)
                         continue
                     
                     if response.status == 403:  # Forbidden
                         logger.error(f"Forbidden (403) for {url} - possible IP block")
-                        await asyncio.sleep(60)
+                        circuit_breaker.record_failure(service)
+                        await asyncio.sleep(120)  # Longer wait for 403
                         continue
                     
                     if response.status != 200:
                         logger.warning(f"HTTP {response.status} for {url}")
-                        raise aiohttp.ClientResponseError(
-                            request_info=response.request_info,
-                            history=response.history,
-                            status=response.status
-                        )
+                        circuit_breaker.record_failure(service)
+                        if response.status >= 500:  # Server errors
+                            await asyncio.sleep(30)
+                        continue
                     
-                    return await response.json()
+                    data = await response.json()
                     
+                    # Success! Cache the result and record success
+                    cache.set(cache_key, data)
+                    circuit_breaker.record_success(service)
+                    
+                    return data
+                    
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout for {url} (attempt {attempt + 1}/{max_retries})")
+            circuit_breaker.record_failure(service)
         except aiohttp.ClientConnectorError as e:
             logger.warning(f"Connection error for {url} (attempt {attempt + 1}/{max_retries}): {e}")
-        except aiohttp.ClientTimeout:
-            logger.warning(f"Timeout for {url} (attempt {attempt + 1}/{max_retries})")
+            circuit_breaker.record_failure(service)
         except Exception as e:
             logger.warning(f"Request failed for {url} (attempt {attempt + 1}/{max_retries}): {e}")
+            circuit_breaker.record_failure(service)
         
         if attempt < max_retries - 1:
-            wait_time = min(15 * (2 ** attempt), 90)  # Longer waits
+            wait_time = min(30 * (2 ** attempt), 120)  # Conservative backoff
             logger.info(f"Retrying in {wait_time}s...")
             await asyncio.sleep(wait_time)
     
+    circuit_breaker.record_failure(service)
     logger.error(f"All retry attempts failed for {url}")
     return None
-# Enhanced CoinGecko functions with better error handling
+
 async def get_coingecko_spot_data(token: str, days: int = 30) -> pd.DataFrame:
     """Fetch spot OHLCV data from CoinGecko with improved error handling"""
     if token not in COINGECKO_SYMBOLS:
@@ -169,9 +455,10 @@ async def get_coingecko_spot_data(token: str, days: int = 30) -> pd.DataFrame:
     for col in ["open", "high", "low", "close"]:
         df[col] = pd.to_numeric(df[col], errors='coerce')
     
-    # Get volume data with additional delay to avoid rate limits
-    await asyncio.sleep(2)  # Extra delay between CoinGecko requests
+    # Conservative delay between CoinGecko requests
+    #await asyncio.sleep(5)  # Extra delay to avoid rate limits
     
+    # Get volume data
     market_url = f"{COINGECKO_BASE_URL}/coins/{coin_id}/market_chart"
     market_params = {"vs_currency": "usd", "days": str(days), "interval": "daily"}
     
@@ -196,7 +483,7 @@ async def get_coingecko_spot_data(token: str, days: int = 30) -> pd.DataFrame:
     
     return df.dropna().set_index("timestamp")
 
-# Enhanced derivatives data functions with multiple endpoints
+# Individual exchange functions from File 1 - restored
 async def get_binance_funding_rate(token: str) -> float:
     """Get current funding rate from Binance with fallback endpoints."""
     if token not in BINANCE_PERP_SYMBOLS:
@@ -280,15 +567,22 @@ async def get_bybit_open_interest(token: str) -> float:
     return 0.0
 
 async def fetch_derivatives_data(token: str) -> Dict[str, float]:
-    """Simplified derivatives data fetch with better error handling and fallbacks"""
+    """Enhanced derivatives data fetch combining both approaches"""
     
     logger.info(f"Fetching derivatives data for {token}")
+    
+    # Check cache first (from File 2)
+    cache_key = f"derivatives_{token}"
+    cached_data = cache.get(cache_key)
+    if cached_data is not None:
+        logger.info(f"Using cached derivatives data for {token}")
+        return cached_data
     
     # Initialize default values
     funding_rate = 0.0
     open_interest = 0.0
     
-    # Strategy 1: Try Binance with single request and immediate fallback
+   # Strategy 1: Try Binance with single request and immediate fallback
     if token in BINANCE_PERP_SYMBOLS:
         symbol = BINANCE_PERP_SYMBOLS[token]
         
@@ -362,14 +656,23 @@ async def fetch_derivatives_data(token: str) -> Dict[str, float]:
         
         logger.warning(f"⚠️  Using synthetic derivatives data for {token}: funding={funding_rate:.4f}%, OI={open_interest:,.0f}")
     
-    return {
+    result = {
         "funding_rate": funding_rate,
         "open_interest": open_interest
     }
+    
+    # Cache the result for 5 minutes
+    cache.set(cache_key, result)
+    
+    return result
+
 async def build_token_features(token: str) -> pd.DataFrame:
     """Build comprehensive features with improved error handling and data validation"""
     
     logger.info(f"Starting feature building for {token}")
+    
+    # Clear expired cache entries
+    cache.clear_expired()
     
     # Get spot market data from CoinGecko
     df = await get_coingecko_spot_data(token, days=30)
@@ -400,7 +703,7 @@ async def build_token_features(token: str) -> pd.DataFrame:
 
     # Get derivatives data with timeout
     try:
-        derivatives_task = asyncio.wait_for(fetch_derivatives_data(token), timeout=30)
+        derivatives_task = asyncio.wait_for(fetch_derivatives_data(token), timeout=45)
         derivatives_data = await derivatives_task
     except asyncio.TimeoutError:
         logger.warning(f"Derivatives data timeout for {token}")
@@ -437,6 +740,8 @@ async def build_token_features(token: str) -> pd.DataFrame:
             df['bb_upper'] = bb.bollinger_hband()
             df['bb_lower'] = bb.bollinger_lband()
             df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['close']
+        else:
+            df['bb_width'] = 0.0
         
     except Exception as e:
         logger.warning(f"Error calculating technical indicators for {token}: {e}")
@@ -496,7 +801,7 @@ async def save_token_data(token: str):
         return False
 
 async def test_network_connectivity():
-    """Test network connectivity to crypto APIs"""
+    """Test network connectivity to crypto APIs - restored from File 1"""
     logger.info("🔍 Testing network connectivity...")
     
     test_urls = [
@@ -540,8 +845,8 @@ async def main():
                 failed += 1
                 logger.error(f"❌ {token} failed after {token_duration:.1f}s")
                 
-            # Rate limiting between tokens - increased for better reliability
-            await asyncio.sleep(3)
+            # Conservative delay between tokens to prevent rate limiting
+            await asyncio.sleep(10)  # Conservative delay from File 2
             
         except Exception as e:
             logger.error(f"Critical error processing {token}: {e}")
@@ -559,6 +864,8 @@ async def main():
     logger.info("✓ Sentiment: Custom sentiment function")
     logger.info("✓ Rate limiting: Adaptive with exponential backoff")
     logger.info("✓ Error handling: Multi-tier fallbacks and retries")
+    logger.info("✓ Caching: 5-minute TTL with automatic cleanup")
+    logger.info("✓ Circuit breaker: Automatic API failure protection")
 
 if __name__ == '__main__':
     # Run the main function with asyncio
