@@ -6,9 +6,10 @@ Hey there! This repo powers a live trading signal platform for EthosX OPerps, fu
 
 ## 🚀 Features
 
-- **Real-time data**: 15 s updates of price, volume, open interest, funding rate, RSI, MACD from Bybit.  
+- **Real-time data**: 2-minute updates of price, volume, open interest, funding rate, RSI, MACD from CoinGecko, Bybit, and Binance.
+- **Smart prediction cycles**: 15-minute signal generation using the freshest market data
 - **Sentiment score**: pulls recent Tweets (once per 15 min) to gauge mood.  
-- **ML signals**: XGBoost model predicts BUY/HOLD/SELL every cycle.  
+- **ML signals**: XGBoost model predicts Long CALL/PUT every cycle.  
 - **Email alerts**: subscribers get notified if confidence ≥ your threshold.  
 - **WebSocket + REST API**: power the front end with live pushes or on-demand calls.  
 - **React dashboard**: sleek UI with charts, metrics, alerts, and subscriptions.
@@ -21,7 +22,8 @@ Hey there! This repo powers a live trading signal platform for EthosX OPerps, fu
 - **ML**: scikit-learn (RandomForest), XGBoost  
 - **Email**: SMTP via Python’s `smtplib`  
 - **Frontend**: React + Vite, Recharts, Lucide-React icons, Axios  
-- **Containerization**: Docker + Docker-Compose (optional)  
+- **Containerization**: Docker + Docker-Compose (optional) 
+- **Deployment**: fyi.io 
 
 ---
 
@@ -60,3 +62,9 @@ VITE_API_BASE_URL=http://localhost:8000
 #Start:
 npm run dev
 Visit http://localhost:5173 to see your dashboard.
+```
+## Links
+ 
+- Website: [React fronted](https://ethosx-signal-dashboard.fly.dev/)  
+- Backend : [FastAPI](https://ethosx-signals.fly.dev/)
+- Twitter thread: [X account]()
