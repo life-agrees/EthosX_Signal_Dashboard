@@ -143,6 +143,8 @@ async def get_current_price(token: str) -> Dict[str, float]:
 async def calculate_real_time_features(token: str) -> Dict[str, float]:
     """Calculate features using same method as data_fetch.py"""
     try:
+        start_time = time.perf_counter()
+        
         # Get recent spot data (same as data_fetch.py)
         df = await get_coingecko_spot_data(token, days=7)
         if df.empty or len(df) < 15:
@@ -176,6 +178,10 @@ async def calculate_real_time_features(token: str) -> Dict[str, float]:
         sentiment_score = sentiment_data.get(token, {}).get('score', 0.0)
         
         latest = df.iloc[-1]
+        
+        end_time = time.perf_counter()
+        execution_time = end_time - start_time
+        logger.info(f"[TIMING] Feature calculation for {token}: {execution_time:.4f} seconds")
         
         return {
             'close_return': float(latest.get('close_return', 0.0)) if not pd.isna(latest.get('close_return', 0.0)) else 0.0,
@@ -346,7 +352,11 @@ async def generate_predictions():
                 model_to_use, _ = model_manager.get_prediction_model()
                 
                 if model_to_use is not None:
+                    start_time = time.perf_counter()
                     label, confidence = make_prediction(model_to_use, token, features)
+                    end_time = time.perf_counter()
+                    execution_time = end_time - start_time
+                    print(f"[TIMING] Prediction for {token}: {execution_time:.4f} seconds")
                     
                     signal_map = {0: "Long PUT", 1: "Long CALL"}
                     signal = signal_map.get(label, "Long PUT")
@@ -373,7 +383,6 @@ async def generate_predictions():
                         'type': 'prediction',
                         'token': token,
                         'data': prediction,
-
                     })
                     
         except Exception as e:
@@ -499,7 +508,11 @@ async def predict_signal(request: PredictionRequest):
             raise HTTPException(status_code=503, detail="Unable to calculate features")
         
         model_to_use, _ = model_manager.get_prediction_model()
+        start_time = time.perf_counter()
         label, confidence = make_prediction(model_to_use, request.token, features)
+        end_time = time.perf_counter()
+        execution_time = end_time - start_time
+        print(f"[TIMING] API Prediction for {request.token}: {execution_time:.4f} seconds")
         
         signal_map = {0: "Long PUT", 1: "Long CALL"}
         signal = signal_map.get(label, "Long PUT")
